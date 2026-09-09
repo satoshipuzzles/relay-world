@@ -30,8 +30,44 @@ let velX = 0, velZ = 0, tankVel = 0; // eased self velocity
 const occluders = [];   // meshes the camera should not see through
 const treeList = [];    // {mesh, x, z} so house lots can clear their trees
 const camRay = new THREE.Raycaster();
+let sun = null;
+
+// shared geometry — every avatar/tank/tree reuses these instead of allocating
+const GEO = {
+    limbLeg: null, limbArm: null, body: null, head: null, hair: null, eye: null,
+    wheel: null, crown: null, trunk: null,
+};
+
+/** Small canvas noise texture so big surfaces don't read as one flat color. */
+function noiseTexture(base, spread, size = 128) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const ctx = c.getContext('2d');
+    const col = new THREE.Color(base);
+    for (let y = 0; y < size; y += 4) {
+        for (let x = 0; x < size; x += 4) {
+            const n = (Math.random() - 0.5) * spread;
+            ctx.fillStyle = `rgb(${(col.r + n) * 255 | 0},${(col.g + n) * 255 | 0},${(col.b + n) * 255 | 0})`;
+            ctx.fillRect(x, y, 4, 4);
+        }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+}
 
 // --- world building ----------------------------------------------------------
+
+let wallTex = null;
+/** Lambert with a shared subtle noise map so walls don't render dead flat. */
+function wallMaterial(color) {
+    if (!wallTex) {
+        wallTex = noiseTexture(0xffffff, 0.06);
+        wallTex.repeat.set(3, 3);
+    }
+    return new THREE.MeshLambertMaterial({ color, map: wallTex });
+}
 
 function pastel(pubkey) {
     let h = 0;
@@ -40,35 +76,43 @@ function pastel(pubkey) {
 }
 
 function makeAvatar(color, scale = 1) {
+    // rounded people: capsule limbs/torso + sphere head instead of boxes
+    if (!GEO.limbLeg) {
+        GEO.limbLeg = new THREE.CapsuleGeometry(0.17, 0.5, 3, 8);
+        GEO.limbLeg.translate(0, -0.42, 0); // pivot at the hip
+        GEO.limbArm = new THREE.CapsuleGeometry(0.12, 0.55, 3, 8);
+        GEO.limbArm.translate(0, -0.44, 0); // pivot at the shoulder
+        GEO.body = new THREE.CapsuleGeometry(0.36, 0.6, 4, 12);
+        GEO.head = new THREE.SphereGeometry(0.4, 16, 12);
+        GEO.hair = new THREE.SphereGeometry(0.42, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55);
+        GEO.eye = new THREE.SphereGeometry(0.06, 8, 6);
+    }
     const g = new THREE.Group();
     const mat = new THREE.MeshLambertMaterial({ color });
     const dark = new THREE.MeshLambertMaterial({ color: color.clone().multiplyScalar(0.6) });
     const skin = new THREE.MeshLambertMaterial({ color: color.clone().offsetHSL(0, -0.2, 0.15) });
 
-    // limbs pivot at their top so they can swing while walking
-    const limb = (w, h, d, mat2) => {
-        const geo = new THREE.BoxGeometry(w, h, d);
-        geo.translate(0, -h / 2, 0);
-        return new THREE.Mesh(geo, mat2);
-    };
-    const legL = limb(0.3, 0.75, 0.38, dark);
-    legL.position.set(-0.2, 0.75, 0);
-    const legR = limb(0.3, 0.75, 0.38, dark);
-    legR.position.set(0.2, 0.75, 0);
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.0, 0.5), mat);
-    body.position.y = 1.25;
-    const armL = limb(0.22, 0.85, 0.28, mat);
-    armL.position.set(-0.58, 1.72, 0);
-    const armR = limb(0.22, 0.85, 0.28, mat);
-    armR.position.set(0.58, 1.72, 0);
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.75, 0.75), skin);
+    const legL = new THREE.Mesh(GEO.limbLeg, dark);
+    legL.position.set(-0.2, 0.82, 0);
+    const legR = new THREE.Mesh(GEO.limbLeg, dark);
+    legR.position.set(0.2, 0.82, 0);
+    const body = new THREE.Mesh(GEO.body, mat);
+    body.position.y = 1.32;
+    body.scale.z = 0.8;
+    const armL = new THREE.Mesh(GEO.limbArm, mat);
+    armL.position.set(-0.52, 1.66, 0);
+    armL.rotation.z = 0.12;
+    const armR = new THREE.Mesh(GEO.limbArm, mat);
+    armR.position.set(0.52, 1.66, 0);
+    armR.rotation.z = -0.12;
+    const head = new THREE.Mesh(GEO.head, skin);
     head.position.y = 2.15;
-    const hair = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.24, 0.8), dark);
-    hair.position.y = 2.56;
-    const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.05), new THREE.MeshBasicMaterial({ color: 0x111111 }));
-    eyeL.position.set(-0.18, 2.2, 0.39);
+    const hair = new THREE.Mesh(GEO.hair, dark);
+    hair.position.set(0, 2.19, -0.04);
+    const eyeL = new THREE.Mesh(GEO.eye, new THREE.MeshBasicMaterial({ color: 0x111111 }));
+    eyeL.position.set(-0.15, 2.2, 0.35);
     const eyeR = eyeL.clone();
-    eyeR.position.x = 0.18;
+    eyeR.position.x = 0.15;
     g.add(legL, legR, body, armL, armR, head, hair, eyeL, eyeR);
     g.scale.setScalar(scale);
     g.traverse(o => { o.castShadow = true; });
@@ -89,21 +133,43 @@ function animateWalk(g, moving) {
 }
 
 function makeTank(color, scale = 1) {
+    if (!GEO.wheel) GEO.wheel = new THREE.CylinderGeometry(0.42, 0.42, 0.5, 14);
     const g = new THREE.Group();
     const hullMat = new THREE.MeshLambertMaterial({ color });
     const darkMat = new THREE.MeshLambertMaterial({ color: color.clone().multiplyScalar(0.45) });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.0, 3.8), hullMat);
-    hull.position.y = 0.9;
-    const trackL = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.8, 4.1), darkMat);
-    trackL.position.set(-1.55, 0.4, 0);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.8, 3.6), hullMat);
+    hull.position.y = 1.0;
+    // sloped glacis plates front and back take the brick edge off the hull
+    const glacis = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.8, 1.0), hullMat);
+    glacis.position.set(0, 0.82, 2.0);
+    glacis.rotation.x = 0.55;
+    const stern = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.8, 0.9), hullMat);
+    stern.position.set(0, 0.84, -1.95);
+    stern.rotation.x = -0.5;
+    const trackL = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 4.0), darkMat);
+    trackL.position.set(-1.5, 0.55, 0);
     const trackR = trackL.clone();
-    trackR.position.x = 1.55;
-    const turret = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.75, 1.9), hullMat);
-    turret.position.y = 1.75;
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 2.5), darkMat);
+    trackR.position.x = 1.5;
+    for (const side of [-1, 1]) {
+        for (let i = 0; i < 4; i++) {
+            const w = new THREE.Mesh(GEO.wheel, darkMat);
+            w.rotation.z = Math.PI / 2;
+            w.position.set(side * 1.5, 0.42, -1.35 + i * 0.9);
+            g.add(w);
+        }
+    }
+    const turret = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.1, 0.6, 16), hullMat);
+    turret.position.y = 1.7;
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.85, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), hullMat);
+    dome.position.y = 1.95;
+    dome.scale.y = 0.65;
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 2.5, 10), darkMat);
     barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 1.8, 2.1);
-    g.add(hull, trackL, trackR, turret, barrel);
+    barrel.position.set(0, 1.85, 2.1);
+    const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.35, 10), darkMat);
+    muzzle.rotation.x = Math.PI / 2;
+    muzzle.position.set(0, 1.85, 3.15);
+    g.add(hull, glacis, stern, trackL, trackR, turret, dome, barrel, muzzle);
     g.scale.setScalar(scale);
     g.traverse(o => { o.castShadow = true; });
     return g;
@@ -113,13 +179,18 @@ function makeTank(color, scale = 1) {
 function makeHouse(house) {
     const color = pastel(house.pubkey);
     const g = new THREE.Group();
-    const wallMat = new THREE.MeshLambertMaterial({ color });
+    const wallMat = wallMaterial(color);
     const darkMat = new THREE.MeshLambertMaterial({ color: color.clone().multiplyScalar(0.5) });
     const body = new THREE.Mesh(new THREE.BoxGeometry(7, 4.5, 6), wallMat);
     body.position.y = 2.25;
-    const roof = new THREE.Mesh(new THREE.ConeGeometry(5.6, 3.2, 4), darkMat);
-    roof.position.y = 6.1;
-    roof.rotation.y = Math.PI / 4;
+    // gable roof: triangular prism with a little overhang, suburban not pyramid
+    const tri = new THREE.Shape();
+    tri.moveTo(-4.1, 0); tri.lineTo(4.1, 0); tri.lineTo(0, 2.7); tri.closePath();
+    const roofGeo = new THREE.ExtrudeGeometry(tri, { depth: 6.8, bevelEnabled: false });
+    roofGeo.translate(0, 4.5, -3.4);
+    const roof = new THREE.Mesh(roofGeo, darkMat);
+    const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.8, 2.2, 0.8), darkMat);
+    chimney.position.set(-2, 6.2, -1.4);
     const door = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.6, 0.3), new THREE.MeshLambertMaterial({ color: 0x1a120a }));
     door.position.set(0, 1.3, 3.05);
     const win = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.2, 0.25), new THREE.MeshLambertMaterial({ color: 0xbfe8ff, emissive: 0x223344 }));
@@ -131,16 +202,21 @@ function makeHouse(house) {
     gBack.position.set(5.4, 1.5, -2.4);
     const gSide = new THREE.Mesh(new THREE.BoxGeometry(0.4, 3.0, 5.2), wallMat);
     gSide.position.set(7.4, 1.5, 0);
-    g.add(body, roof, door, win, gRoof, gBack, gSide);
+    // concrete driveway out of the garage
+    const drive = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 4.6), new THREE.MeshLambertMaterial({ color: 0xa8a49c }));
+    drive.rotation.x = -Math.PI / 2;
+    drive.position.set(5.4, 0.04, 4.8);
+    drive.receiveShadow = true;
+    g.add(body, roof, chimney, door, win, gRoof, gBack, gSide, drive);
     g.position.set(house.x, 0, house.z);
     g.rotation.y = house.yaw;
-    g.traverse(o => { o.castShadow = true; });
+    g.traverse(o => { o.castShadow = true; o.receiveShadow = true; });
     return g;
 }
 
 function makeBuilding(b) {
     const g = new THREE.Group();
-    const wallMat = new THREE.MeshLambertMaterial({ color: b.color });
+    const wallMat = wallMaterial(b.color);
     const walls = new THREE.Mesh(new THREE.BoxGeometry(b.w, b.h, b.d), wallMat);
     walls.position.set(b.x, b.h / 2, b.z);
     walls.castShadow = true;
@@ -160,6 +236,7 @@ function makeBuilding(b) {
         win.position.set(b.x, b.h * 0.62, b.z + side * (b.d / 2 + 0.05));
         g.add(win);
     }
+    g.traverse(o => { o.castShadow = true; o.receiveShadow = true; });
     return g;
 }
 
@@ -214,52 +291,160 @@ function makeInterior(b) {
 }
 
 export function init(canvas) {
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    const isTouch = 'ontouchstart' in window;
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87c4e8);
-    scene.fog = new THREE.Fog(0x87c4e8, 90, 240);
+    scene.background = new THREE.Color(0x8ec8ec);
+    scene.fog = new THREE.Fog(0xa9d6ee, 100, 300);
 
-    camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
+    camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 900);
 
-    scene.add(new THREE.HemisphereLight(0xdfefff, 0x506840, 1.1));
-    const sun = new THREE.DirectionalLight(0xfff4d6, 1.4);
-    sun.position.set(60, 100, 40);
-    scene.add(sun);
-
-    // ground
-    const S = CONFIG.WORLD_SIZE;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(S, S), new THREE.MeshLambertMaterial({ color: 0x6aa84f }));
-    ground.rotation.x = -Math.PI / 2;
-    scene.add(ground);
-    // plaza + paths
-    const plaza = new THREE.Mesh(new THREE.CircleGeometry(16, 24), new THREE.MeshLambertMaterial({ color: 0xc9b98a }));
-    plaza.rotation.x = -Math.PI / 2;
-    plaza.position.set(0, 0.02, 0);
-    scene.add(plaza);
-    for (const b of BUILDINGS) {
-        const len = Math.hypot(b.x, b.z + b.d / 2 + 4);
-        const path = new THREE.Mesh(new THREE.PlaneGeometry(3.5, len), new THREE.MeshLambertMaterial({ color: 0xc9b98a }));
-        path.rotation.x = -Math.PI / 2;
-        path.position.set(b.x / 2, 0.02, (b.z + b.d / 2 + 4) / 2);
-        path.rotation.z = -Math.atan2(b.x, b.z + b.d / 2 + 4);
-        scene.add(path);
+    // gradient sky dome: horizon haze up to a deeper zenith blue
+    {
+        const c = document.createElement('canvas');
+        c.width = 4; c.height = 128;
+        const ctx = c.getContext('2d');
+        const grad = ctx.createLinearGradient(0, 128, 0, 0);
+        grad.addColorStop(0, '#cfe8f4');
+        grad.addColorStop(0.4, '#8ec8ec');
+        grad.addColorStop(1, '#4d97d4');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 4, 128);
+        const skyTex = new THREE.CanvasTexture(c);
+        skyTex.colorSpace = THREE.SRGBColorSpace;
+        const sky = new THREE.Mesh(
+            new THREE.SphereGeometry(700, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+            new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
+        scene.add(sky);
+        // a few soft clouds
+        const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, fog: false });
+        for (let i = 0; i < 9; i++) {
+            const cl = new THREE.Group();
+            for (let j = 0; j < 3; j++) {
+                const puff = new THREE.Mesh(new THREE.SphereGeometry(9 + (i + j) % 5 * 3, 10, 8), cloudMat);
+                puff.scale.y = 0.35;
+                puff.position.set(j * 9 - 9, (j % 2) * 2, (j * 5) % 8);
+                cl.add(puff);
+            }
+            const a = i * 0.7 + 0.4;
+            cl.position.set(Math.cos(a) * (170 + i * 28), 95 + (i % 4) * 14, Math.sin(a) * (170 + i * 24));
+            scene.add(cl);
+        }
     }
 
-    // scattered trees, deterministic
+    scene.add(new THREE.HemisphereLight(0xdfefff, 0x55703f, 1.0));
+    sun = new THREE.DirectionalLight(0xfff4d6, 1.6);
+    sun.position.set(60, 100, 40);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(isTouch ? 1024 : 2048, isTouch ? 1024 : 2048);
+    const sc = sun.shadow.camera;
+    sc.left = -60; sc.right = 60; sc.top = 60; sc.bottom = -60;
+    sc.near = 20; sc.far = 260;
+    sun.shadow.bias = -0.0006;
+    scene.add(sun, sun.target);
+
+    // ground: noise-textured grass so it doesn't read as one flat green sheet
+    const S = CONFIG.WORLD_SIZE;
+    const grassTex = noiseTexture(0x5f9c4b, 0.028);
+    grassTex.repeat.set(40, 40);
+    grassTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(S, S), new THREE.MeshLambertMaterial({ map: grassTex }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // paved town: asphalt plaza ring-road + streets with lane markings
+    const asphaltTex = noiseTexture(0x46464c, 0.03);
+    asphaltTex.repeat.set(6, 6);
+    const asphaltMat = new THREE.MeshLambertMaterial({ map: asphaltTex });
+    const paveMat = new THREE.MeshLambertMaterial({ color: 0xb3aea3 });
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xd8d8cf });
+    const flat = (mesh, y) => { mesh.rotation.x = -Math.PI / 2; mesh.position.y = y; mesh.receiveShadow = true; return mesh; };
+
+    // central plaza: paved circle with an asphalt ring road around it
+    const plaza = flat(new THREE.Mesh(new THREE.CircleGeometry(15, 40), paveMat), 0.03);
+    scene.add(plaza);
+    const ring = flat(new THREE.Mesh(new THREE.RingGeometry(15, 22, 48), asphaltMat), 0.02);
+    scene.add(ring);
+    // dashes around the ring road centerline
+    for (let i = 0; i < 26; i++) {
+        const a = (i / 26) * Math.PI * 2;
+        const dash = flat(new THREE.Mesh(new THREE.PlaneGeometry(0.35, 2.2), lineMat), 0.05);
+        dash.position.set(Math.cos(a) * 18.5, 0.05, Math.sin(a) * 18.5);
+        dash.rotation.z = -a + Math.PI / 2;
+        scene.add(dash);
+    }
+    // outer suburb loop road passing through the housing belt
+    const loop = flat(new THREE.Mesh(new THREE.RingGeometry(64, 71, 64), asphaltMat), 0.02);
+    loop.position.set(0, 0.02, -20);
+    scene.add(loop);
+    for (let i = 0; i < 44; i++) {
+        const a = (i / 44) * Math.PI * 2;
+        const dash = flat(new THREE.Mesh(new THREE.PlaneGeometry(0.35, 2.6), lineMat), 0.05);
+        dash.position.set(Math.cos(a) * 67.5, 0.05, Math.sin(a) * 67.5 - 20);
+        dash.rotation.z = -a + Math.PI / 2;
+        scene.add(dash);
+    }
+    // streets: ring road out to each town building, plus four avenues to the loop
+    const street = (x0, z0, x1, z1, w = 6) => {
+        const len = Math.hypot(x1 - x0, z1 - z0);
+        const road = flat(new THREE.Mesh(new THREE.PlaneGeometry(w, len), asphaltMat), 0.02);
+        road.position.set((x0 + x1) / 2, 0.02, (z0 + z1) / 2);
+        road.rotation.z = -Math.atan2(x1 - x0, z1 - z0);
+        scene.add(road);
+        const n = Math.floor(len / 6);
+        for (let i = 0; i < n; i++) {
+            const t = (i + 0.5) / n;
+            const dash = flat(new THREE.Mesh(new THREE.PlaneGeometry(0.35, 2.4), lineMat), 0.05);
+            dash.position.set(x0 + (x1 - x0) * t, 0.05, z0 + (z1 - z0) * t);
+            dash.rotation.z = road.rotation.z;
+            scene.add(dash);
+        }
+    };
+    for (const b of BUILDINGS) {
+        const dl = Math.hypot(b.x, b.z + b.d / 2 + 4) || 1;
+        street(b.x / dl * 20, (b.z + b.d / 2 + 4) / dl * 20, b.x, b.z + b.d / 2 + 4, 5);
+    }
+    for (const a of [Math.PI * 0.25, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75]) {
+        street(Math.cos(a) * 21, Math.sin(a) * 21, Math.cos(a) * 66, Math.sin(a) * 66 - 20);
+    }
+
+    // scattered trees, deterministic — leafy sphere clusters, not cones
+    if (!GEO.trunk) {
+        GEO.trunk = new THREE.CylinderGeometry(0.35, 0.5, 2.8, 8);
+        GEO.crown = new THREE.SphereGeometry(1, 10, 8);
+    }
+    const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2b });
+    const crownMats = [new THREE.MeshLambertMaterial({ color: 0x3f7a2a }), new THREE.MeshLambertMaterial({ color: 0x33691e })];
     for (let i = 0; i < 80; i++) {
         const a = i * 2.399963; // golden angle
-        const r = 40 + (i * 37 % 130);
+        const r = 26 + (i * 37 % 150);
         const x = Math.cos(a) * r, z = Math.sin(a) * r - 20;
         if (World.insideBuilding(x, z, 6)) continue;
+        if (r > 60 && r < 76) continue;     // keep the loop road clear
+        if (Math.hypot(x, z) < 26) continue; // and the plaza + ring road
         const tree = new THREE.Group();
-        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 2.4), new THREE.MeshLambertMaterial({ color: 0x6b4a2b }));
-        trunk.position.y = 1.2;
-        const crown = new THREE.Mesh(new THREE.ConeGeometry(2.4 + (i % 3), 5 + (i % 4), 6), new THREE.MeshLambertMaterial({ color: i % 2 ? 0x38761d : 0x2d5e18 }));
-        crown.position.y = 4.4;
-        tree.add(trunk, crown);
+        const trunk = new THREE.Mesh(GEO.trunk, trunkMat);
+        trunk.position.y = 1.4;
+        const s = 1.8 + (i % 3) * 0.45;
+        const main = new THREE.Mesh(GEO.crown, crownMats[i % 2]);
+        main.position.y = 4.2;
+        main.scale.setScalar(s);
+        const puffA = new THREE.Mesh(GEO.crown, crownMats[(i + 1) % 2]);
+        puffA.position.set(s * 0.55, 3.6, s * 0.25);
+        puffA.scale.setScalar(s * 0.62);
+        const puffB = new THREE.Mesh(GEO.crown, crownMats[i % 2]);
+        puffB.position.set(-s * 0.5, 3.8, -s * 0.3);
+        puffB.scale.setScalar(s * 0.55);
+        tree.add(trunk, main, puffA, puffB);
         tree.position.set(x, 0, z);
+        tree.traverse(o => { o.castShadow = true; });
         scene.add(tree);
         treeList.push({ mesh: tree, x, z });
     }
@@ -608,6 +793,11 @@ export function update(dt) {
 
     syncShells();
     stepFx();
+
+    // keep the sun (and its shadow frustum) centred on the player so shadows
+    // stay sharp across the whole 400m world
+    sun.position.set(s.x + 60, 100, s.z + 40);
+    sun.target.position.set(s.x, 0, s.z);
 
     // camera: third person behind player (further back in a tank), pulled in
     // when a house or building sits between the camera and the player

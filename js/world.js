@@ -93,14 +93,18 @@ export function addHouse(pubkey, home) {
 
 function homeFor(pubkey) {
     const h = hash32(pubkey);
-    // Spread across the plaza and streets, never inside a building footprint.
+    // Suburban belts around the town centre: yards stay off the plaza (r<28)
+    // and off the loop road band (~64-71 from centre once the lot is pushed
+    // 9m outward), so streets and the park stay clear.
     for (let attempt = 0; attempt < 8; attempt++) {
         const hx = hash32(pubkey + ':' + attempt);
-        const r = 15 + (h % 1000) / 1000 * 120;
+        let r = 36 + (h % 1000) / 1000 * 114;
+        if (r > 50 && r < 80) r += 52;
         const a = (hx % 6283) / 1000;
         const x = Math.cos(a) * r;
         const z = Math.sin(a) * r * 0.9 - 20;
-        if (!insideBuilding(x, z)) return { x, z };
+        // the plaza + its ring road are centred on the origin, not (0,-20)
+        if (!insideBuilding(x, z) && Math.hypot(x, z) > 32) return { x, z };
     }
     return { x: (h % 100) - 50, z: 30 };
 }
