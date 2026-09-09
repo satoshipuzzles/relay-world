@@ -5,6 +5,11 @@ export const CONFIG = {
     // The world relay. Everything — feed NPCs, presence, chat — lives here.
     RELAY: 'wss://coolfeed.feeds.relay.tools',
 
+    // Read-only fallbacks for kind-0 metadata: the world relay carries few
+    // profiles, and NPCs deserve names and faces. Queries are batched; the
+    // first relay that connects wins.
+    PROFILE_RELAYS: ['wss://purplepag.es', 'wss://relay.damus.io', 'wss://relay.nostr.band'],
+
     // Ephemeral kinds (20000-29999): relays forward but never store them,
     // so presence and chat cost the relay nothing at rest.
     KIND_PRESENCE: 21150,

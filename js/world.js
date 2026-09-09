@@ -58,9 +58,59 @@ function homeFor(pubkey) {
 
 // --- feed ingestion ----------------------------------------------------------
 
+// --- profile backfill --------------------------------------------------------
+// The world relay carries few kind-0 events, so NPC names/faces come from a
+// dedicated profile relay. One socket, batched author queries, read-only.
+
+const profileQueue = new Set();
+let profileWs = null;
+let profileRelayIdx = 0;
+
+function requestProfile(pubkey) {
+    if (profiles.has(pubkey)) return;
+    profileQueue.add(pubkey);
+}
+
+function flushProfileQueue() {
+    if (profileQueue.size === 0) return;
+    const ask = (ws) => {
+        const authors = [...profileQueue];
+        profileQueue.clear();
+        ws.send(JSON.stringify(['REQ', 'p' + Date.now(), { kinds: [0], authors }]));
+    };
+    if (profileWs && profileWs.readyState === WebSocket.OPEN) { ask(profileWs); return; }
+    if (profileWs && profileWs.readyState === WebSocket.CONNECTING) return; // retry next flush
+    const url = CONFIG.PROFILE_RELAYS[profileRelayIdx % CONFIG.PROFILE_RELAYS.length];
+    profileWs = new WebSocket(url);
+    const sock = profileWs;
+    // a relay that hangs in CONNECTING blocks the rotation — cut it loose
+    const guard = setTimeout(() => {
+        if (sock.readyState === WebSocket.CONNECTING) sock.close();
+    }, 6000);
+    profileWs.onopen = () => { clearTimeout(guard); ask(profileWs); };
+    profileWs.onmessage = (msg) => {
+        try {
+            const d = JSON.parse(msg.data);
+            if (d[0] === 'EVENT' && d[2].kind === 0) handleEvent(d[1], d[2]);
+        } catch { /* ignore */ }
+    };
+    profileWs.onclose = (e) => {
+        // rotate to the next relay if this one never worked
+        if (!e.wasClean) profileRelayIdx++;
+        profileWs = null;
+    };
+    profileWs.onerror = () => { /* onclose follows and rotates */ };
+}
+
+/** console diagnostics for the profile backfill (no UI) */
+export function profileDebug() {
+    return { queued: profileQueue.size, relayIdx: profileRelayIdx, wsState: profileWs ? profileWs.readyState : null };
+}
+
 function upsertNpc(pubkey) {
     if (npcs.has(pubkey)) return npcs.get(pubkey);
     if (npcs.size >= CONFIG.NPC_LIMIT) return null;
+    requestProfile(pubkey);
     const home = homeFor(pubkey);
     const npc = {
         pubkey,
@@ -172,6 +222,7 @@ export function start() {
     Nostr.on('event', handleEvent);
     Nostr.subscribe([{ kinds: CONFIG.FEED_KINDS, limit: CONFIG.FEED_LIMIT }]);
     Nostr.subscribe([{ kinds: [CONFIG.KIND_PRESENCE, CONFIG.KIND_CHAT], '#t': [CONFIG.TAG], since }]);
+    setInterval(flushProfileQueue, 2500);
 }
 
 export function tick(dt, now) {

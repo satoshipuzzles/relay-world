@@ -53,6 +53,12 @@ function boot() {
     });
     $('login-guest').addEventListener('click', () => begin());
 
+    // #guest deep link: straight into the world, no login screen
+    if (location.hash === '#guest') begin();
+
+    // console/test handle — no UI, just state access
+    window.__rw = { World, Scene, Nostr };
+
     let last = performance.now();
     function loop(now) {
         const dt = Math.min(0.05, (now - last) / 1000);
