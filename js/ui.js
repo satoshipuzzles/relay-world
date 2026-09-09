@@ -1,7 +1,7 @@
 /**
  * ui.js - HUD, projected labels, chat, profile popup, arcade overlay, map.
  */
-import { CONFIG, BUILDINGS } from './config.js';
+import { CONFIG, BUILDINGS, RELAYS } from './config.js';
 import * as World from './world.js';
 import * as Scene from './scene.js';
 import * as Nostr from './nostr.js';
@@ -81,7 +81,10 @@ function updateLabels() {
                 const p = Scene.toScreen(npc.x, 2.9, npc.z);
                 if (p) {
                     const el = labelFor('name:' + npc.pubkey, 'name-label npc');
-                    fillNameLabel(el, World.pictureOf(npc.pubkey), World.nameOf(npc.pubkey).slice(0, 20));
+                    const followed = World.follows.has(npc.pubkey);
+                    el.classList.toggle('follow', followed);
+                    fillNameLabel(el, World.pictureOf(npc.pubkey),
+                        (followed ? '★ ' : '') + World.nameOf(npc.pubkey).slice(0, 20));
                     place(el, p.x, p.y);
                 }
             }
@@ -203,7 +206,8 @@ function renderFeedPanel() {
         const when = age < 60 ? `${age}m` : `${Math.floor(age / 60)}h`;
         return `<div class="feed-row"><span class="feed-author">${esc(World.nameOf(ev.pubkey).slice(0, 18))}</span><span class="feed-age">${when}</span><div class="feed-text">${esc(ev.content.slice(0, 200))}</div></div>`;
     }).join('');
-    feedPanel.innerHTML = `<h3>⚡ LIVE ON COOL FEEDS</h3>${rows || '<div class="feed-row">Listening for notes…</div>'}`;
+    const host = esc(Nostr.currentRelay().replace('wss://', '').toUpperCase());
+    feedPanel.innerHTML = `<h3>⚡ LIVE ON ${host}</h3>${rows || '<div class="feed-row">Listening for notes…</div>'}`;
 }
 
 function openFeedPanel() {
@@ -216,6 +220,50 @@ function openFeedPanel() {
 
 function closeFeedPanel() {
     if (feedPanel) { feedPanel.remove(); feedPanel = null; }
+}
+
+// --- relay picker ------------------------------------------------------------
+
+let jumping = false;
+
+function renderRelayList() {
+    const list = $('relay-list');
+    list.textContent = '';
+    for (const r of RELAYS) {
+        const row = document.createElement('button');
+        row.className = 'relay-row' + (r.url === Nostr.currentRelay() ? ' active' : '');
+        const name = document.createElement('span');
+        name.textContent = (r.url === Nostr.currentRelay() ? '▶ ' : '') + r.name;
+        const url = document.createElement('span');
+        url.className = 'relay-url';
+        url.textContent = r.url.replace('wss://', '');
+        row.append(name, url);
+        row.addEventListener('click', () => jumpRelay(r));
+        list.appendChild(row);
+    }
+}
+
+async function jumpRelay(r) {
+    if (jumping || r.url === Nostr.currentRelay()) return;
+    jumping = true;
+    $('relay-panel').classList.add('hide');
+    toast(`Jumping to ${r.name}…`);
+    try {
+        await World.switchRelay(r.url);
+        $('relay-pill').textContent = '⚡ ' + r.url.replace('wss://', '');
+        toast(`Welcome to ${r.name} — new relay, new npubs`, 'success');
+    } catch {
+        toast(`${r.name} unreachable — retrying in background`, 'error');
+        $('relay-pill').textContent = '⚡ ' + r.url.replace('wss://', '');
+    }
+    jumping = false;
+}
+
+function toggleRelayPanel(force) {
+    const panel = $('relay-panel');
+    const show = force !== undefined ? force : panel.classList.contains('hide');
+    if (show) renderRelayList();
+    panel.classList.toggle('hide', !show);
 }
 
 // --- chat --------------------------------------------------------------------
@@ -292,6 +340,8 @@ export function init() {
     World.on('chat', addChatRow);
 
     $('profile-close').addEventListener('click', () => $('profile-popup').classList.add('hide'));
+    $('relay-pill').addEventListener('click', () => toggleRelayPanel());
+    $('relay-close').addEventListener('click', () => toggleRelayPanel(false));
     $('arcade-close').addEventListener('click', closeArcade);
     $('map-toggle').addEventListener('click', () => toggleMap());
     $('map-overlay').addEventListener('click', () => toggleMap(false));
@@ -314,6 +364,7 @@ export function init() {
         else if (e.code === 'Enter') openChatInput();
         else if (e.code === 'Escape') {
             $('profile-popup').classList.add('hide');
+            toggleRelayPanel(false);
             if (!$('arcade-overlay').classList.contains('hide')) closeArcade();
             toggleMap(false);
         }

@@ -8,11 +8,14 @@
 import { generateSecretKey, getPublicKey, finalizeEvent, nip19 } from 'nostr-tools';
 import { CONFIG } from './config.js';
 
-const listeners = { event: [], status: [] };
+const listeners = { event: [], status: [], relay: [] };
 let ws = null;
 let openPromise = null;
 let subSerial = 0;
+let relayUrl = CONFIG.RELAY;
 const liveSubs = new Map(); // subId -> filters, replayed on reconnect
+
+export function currentRelay() { return relayUrl; }
 
 export const identity = {
     sessionSk: generateSecretKey(),
@@ -39,8 +42,7 @@ function emit(type, ...args) { for (const fn of listeners[type]) fn(...args); }
 export function connect() {
     if (openPromise) return openPromise;
     openPromise = new Promise((resolve, reject) => {
-        const url = CONFIG.RELAY;
-        const sock = new WebSocket(url);
+        const sock = new WebSocket(relayUrl);
         const timer = setTimeout(() => { sock.close(); reject(new Error('relay timeout')); }, 8000);
         sock.onopen = () => {
             clearTimeout(timer);
@@ -67,6 +69,32 @@ export function connect() {
 
 function send(arr) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(arr));
+}
+
+/**
+ * Jump to a different world relay. Live subscriptions carry over: onopen
+ * replays them against the new socket. The old socket's onclose is detached
+ * first so its auto-reconnect can't race us back onto the old relay.
+ */
+export function setRelay(url) {
+    if (url === relayUrl) return Promise.resolve();
+    relayUrl = url;
+    if (ws) {
+        const old = ws;
+        ws = null;
+        old.onclose = null;
+        old.onmessage = null;
+        try { old.close(); } catch { /* already dying */ }
+    }
+    openPromise = null;
+    emit('relay', url);
+    return connect();
+}
+
+/** Drop a live subscription (sent CLOSE + no replay on reconnect). */
+export function unsubscribe(id) {
+    if (!liveSubs.delete(id)) return;
+    send(['CLOSE', id]);
 }
 
 export function subscribe(filters) {

@@ -184,6 +184,14 @@ export function init(canvas) {
     selfAvatar = makeAvatar(new THREE.Color(0x8bac0f), 1.05);
     scene.add(selfAvatar);
 
+    // relay jump: every avatar belonged to the old relay's world
+    World.on('reset', () => {
+        for (const [key, a] of avatars) {
+            scene.remove(a);
+            avatars.delete(key);
+        }
+    });
+
     window.addEventListener('resize', () => {
         renderer.setSize(window.innerWidth, window.innerHeight);
         camera.aspect = window.innerWidth / window.innerHeight;

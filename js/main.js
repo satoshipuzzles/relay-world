@@ -18,8 +18,10 @@ async function begin() {
         setStatus('Relay unreachable — exploring offline. Refresh to retry.');
     }
 
-    // If logged in with NIP-07, pull our own profile for name + avatar.
+    // If logged in with NIP-07, pull our own profile for name + avatar,
+    // and our contact list so follows get a ★ in the world.
     if (Nostr.identity.mainPk) {
+        World.fetchFollows(Nostr.identity.mainPk);
         Nostr.subscribe([{ kinds: [0], authors: [Nostr.identity.mainPk], limit: 1 }]);
         Nostr.on('event', (subId, ev) => {
             if (ev.kind === 0 && ev.pubkey === Nostr.identity.mainPk) {

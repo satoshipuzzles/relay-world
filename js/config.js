@@ -2,7 +2,8 @@
  * config.js - Relay World configuration
  */
 export const CONFIG = {
-    // The world relay. Everything — feed NPCs, presence, chat — lives here.
+    // The default world relay. Everything — feed NPCs, presence, chat — lives
+    // on whichever relay is active; switching relays swaps the whole world.
     RELAY: 'wss://coolfeed.feeds.relay.tools',
 
     // Read-only fallbacks for kind-0 metadata: the world relay carries few
@@ -38,6 +39,17 @@ export const CONFIG = {
 
     WALK_SPEED: 8,            // m/s
 };
+
+// World relays the player can jump between. Each one is its own shard: the
+// npubs walking around are that relay's authors, and presence/chat only meet
+// players on the same relay. (Primal deliberately absent — owner request.)
+export const RELAYS = [
+    { name: 'COOL FEEDS', url: 'wss://coolfeed.feeds.relay.tools' },
+    { name: 'DAMUS', url: 'wss://relay.damus.io' },
+    { name: 'NOS.LOL', url: 'wss://nos.lol' },
+    { name: 'NOSTR.WINE', url: 'wss://nostr.wine' },
+    { name: 'OFFCHAIN', url: 'wss://offchain.pub' },
+];
 
 // Buildings players can walk into. Doors face +z (south, toward spawn).
 export const BUILDINGS = [

@@ -20,8 +20,9 @@ export const players = new Map();  // session pubkey -> remote player
 export const profiles = new Map(); // pubkey -> kind0 profile
 export const feedNotes = [];       // newest-first kind1 events (for the feed hall)
 export const chatLog = [];         // {name, text, ts, self}
+export const follows = new Set();  // pubkeys the logged-in user follows (kind 3)
 
-const events = { chat: [], npc: [], note: [] };
+const events = { chat: [], npc: [], note: [], reset: [] };
 export function on(type, fn) { events[type].push(fn); }
 function emit(type, ...a) { for (const fn of events[type]) fn(...a); }
 
@@ -91,7 +92,9 @@ function flushProfileQueue() {
     profileWs.onmessage = (msg) => {
         try {
             const d = JSON.parse(msg.data);
-            if (d[0] === 'EVENT' && d[2].kind === 0) handleEvent(d[1], d[2]);
+            // absorb only — a late profile for a previous relay's author must
+            // not resurrect that NPC after a relay jump
+            if (d[0] === 'EVENT' && d[2].kind === 0) absorbProfile(d[2]);
         } catch { /* ignore */ }
     };
     profileWs.onclose = (e) => {
@@ -109,7 +112,7 @@ export function profileDebug() {
 
 function upsertNpc(pubkey) {
     if (npcs.has(pubkey)) return npcs.get(pubkey);
-    if (npcs.size >= CONFIG.NPC_LIMIT) return null;
+    if (npcs.size >= CONFIG.NPC_LIMIT && !follows.has(pubkey)) return null;
     requestProfile(pubkey);
     const home = homeFor(pubkey);
     const npc = {
@@ -135,16 +138,20 @@ export function pictureOf(pubkey) {
     return (p && p.picture) || null;
 }
 
+function absorbProfile(ev) {
+    try {
+        const existing = profiles.get(ev.pubkey);
+        if (!existing || existing._at < ev.created_at) {
+            const p = JSON.parse(ev.content);
+            p._at = ev.created_at;
+            profiles.set(ev.pubkey, p);
+        }
+    } catch { /* bad profile json */ }
+}
+
 function handleEvent(subId, ev) {
     if (ev.kind === 0) {
-        try {
-            const existing = profiles.get(ev.pubkey);
-            if (!existing || existing._at < ev.created_at) {
-                const p = JSON.parse(ev.content);
-                p._at = ev.created_at;
-                profiles.set(ev.pubkey, p);
-            }
-        } catch { /* bad profile json */ }
+        absorbProfile(ev);
         upsertNpc(ev.pubkey);
     } else if (ev.kind === 1) {
         const npc = upsertNpc(ev.pubkey);
@@ -223,6 +230,48 @@ export function start() {
     Nostr.subscribe([{ kinds: CONFIG.FEED_KINDS, limit: CONFIG.FEED_LIMIT }]);
     Nostr.subscribe([{ kinds: [CONFIG.KIND_PRESENCE, CONFIG.KIND_CHAT], '#t': [CONFIG.TAG], since }]);
     setInterval(flushProfileQueue, 2500);
+}
+
+/**
+ * Jump the whole world onto a different relay: clear everything that came off
+ * the old relay, then reconnect (live subscriptions replay automatically).
+ */
+export async function switchRelay(url) {
+    npcs.clear();
+    players.clear();
+    feedNotes.length = 0;
+    emit('reset');
+    await Nostr.setRelay(url);
+}
+
+/**
+ * Pull the logged-in user's contact list (kind 3) so their follows can be
+ * highlighted in the world. One-shot socket against the profile relays —
+ * contact lists rarely live on small world relays.
+ */
+export function fetchFollows(mainPk) {
+    let idx = 0;
+    const tryRelay = () => {
+        if (idx >= CONFIG.PROFILE_RELAYS.length) return;
+        const sock = new WebSocket(CONFIG.PROFILE_RELAYS[idx++]);
+        let done = false;
+        // onclose is the single retry path; everything else just closes
+        const guard = setTimeout(() => sock.close(), 6000);
+        sock.onopen = () => sock.send(JSON.stringify(['REQ', 'f1', { kinds: [3], authors: [mainPk], limit: 1 }]));
+        sock.onmessage = (msg) => {
+            try {
+                const d = JSON.parse(msg.data);
+                if (d[0] === 'EVENT' && d[2].kind === 3) {
+                    for (const t of d[2].tags) if (t[0] === 'p' && t[1]) follows.add(t[1]);
+                    done = true;
+                }
+                if (d[0] === 'EOSE') sock.close();
+            } catch { /* ignore */ }
+        };
+        sock.onerror = () => { /* onclose follows */ };
+        sock.onclose = () => { clearTimeout(guard); if (!done) tryRelay(); };
+    };
+    tryRelay();
 }
 
 export function tick(dt, now) {

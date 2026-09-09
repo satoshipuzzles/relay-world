@@ -31,7 +31,7 @@
             </div>
             <h1>RELAY WORLD</h1>
             <p class="tagline">IT IS DANGEROUS TO GO ALONE! TAKE THIS...</p>
-            <p class="sub">Explore the <strong>Cool Feeds</strong> relay as a living world. Meet npubs, read their notes, enter buildings, play tank games.</p>
+            <p class="sub">Explore Nostr relays as living worlds. Meet npubs, read their notes, enter buildings, play tank games — and jump from relay to relay.</p>
             <div id="login-options">
                 <button id="login-nostr" class="primary-button">CONNECT NOSTR</button>
                 <button id="login-guest" class="secondary-button">PLAY AS GUEST</button>
@@ -48,7 +48,7 @@
     <!-- HUD -->
     <div id="hud" class="hide">
         <div id="top-bar">
-            <div id="relay-pill" title="World relay">⚡ coolfeed.feeds.relay.tools</div>
+            <button id="relay-pill" title="World relay — click to jump relays">⚡ coolfeed.feeds.relay.tools</button>
             <div id="online-pill">👥 <span id="online-count">1</span></div>
             <button id="map-toggle" class="pill-button" title="Map (M)">🗺️</button>
         </div>
@@ -69,6 +69,14 @@
     <div id="map-overlay" class="hide">
         <canvas id="map-canvas" width="640" height="640"></canvas>
         <div class="overlay-hint">M / tap to close</div>
+    </div>
+
+    <!-- Relay picker -->
+    <div id="relay-panel" class="panel hide">
+        <button class="popup-close" id="relay-close">×</button>
+        <h3>JUMP RELAY</h3>
+        <p class="relay-hint">Each relay is its own world — different npubs live on each one. Followed npubs show a ★.</p>
+        <div id="relay-list"></div>
     </div>
 
     <!-- Profile popup -->

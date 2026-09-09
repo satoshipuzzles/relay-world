@@ -64,6 +64,7 @@ html, body {
     image-rendering: pixelated;
 }
 .name-label.player { color: #7ff7ff; border: 1px solid #2aa; }
+.name-label.follow { color: var(--gold); border: 1px solid var(--gold); }
 .sign-label {
     position: absolute;
     left: 0; top: 0;
@@ -183,7 +184,7 @@ html, body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-#relay-pill { flex-shrink: 1; min-width: 0; }
+#relay-pill { flex-shrink: 1; min-width: 0; cursor: pointer; }
 #online-pill { margin-left: auto; }
 .pill-button { cursor: pointer; font-size: 12px; padding: 5px 8px; }
 
@@ -345,6 +346,33 @@ html, body {
     cursor: pointer;
     display: inline-block;
 }
+
+/* ---- relay picker ---- */
+#relay-panel {
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(340px, 92vw);
+}
+#relay-panel h3 { font-family: var(--font-pixel); font-size: 11px; color: var(--green-light); margin-bottom: 10px; }
+.relay-hint { font-size: 12px; color: #9ab88a; line-height: 1.5; margin-bottom: 12px; }
+#relay-list { display: flex; flex-direction: column; gap: 8px; }
+.relay-row {
+    font-family: var(--font-pixel);
+    font-size: 9px;
+    text-align: left;
+    padding: 11px 12px;
+    background: rgba(139, 172, 15, 0.12);
+    color: #d8e8c8;
+    border: 2px solid #2a4a2a;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+.relay-row:hover { border-color: var(--green-light); }
+.relay-row.active { border-color: var(--gold); color: var(--gold); cursor: default; }
+.relay-row .relay-url { font-family: inherit; font-size: 7px; color: #8a9a7a; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- arcade ---- */
 #arcade-overlay {
