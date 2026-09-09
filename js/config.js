@@ -12,8 +12,14 @@ export const CONFIG = {
 
     // Ephemeral kinds (20000-29999): relays forward but never store them,
     // so presence and chat cost the relay nothing at rest.
-    KIND_PRESENCE: 21150,
-    KIND_CHAT: 21151,
+    //
+    // Cool Feeds gates writes behind a web of trust but whitelists kinds
+    // 21000-21002 for unknown keys (measured 2026-09-08; the tank game's
+    // netcode lives there). Relay World rides that window, namespaced by the
+    // `t` tag so tank clients (which filter on room tags) never see these.
+    // If the operator whitelists 21150/21151, move to dedicated kinds.
+    KIND_PRESENCE: 21000,
+    KIND_CHAT: 21001,
     TAG: 'relay-world',
 
     // Feed content that populates the world with NPCs.
