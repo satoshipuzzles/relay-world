@@ -562,10 +562,12 @@ export function update(dt) {
         }
         velX = velZ = 0;
     } else {
-        // walking accelerates/brakes over a few frames instead of snapping
+        // walking accelerates/brakes over a few frames instead of snapping.
+        // Camera-right in world space is (-cos ry, +sin ry) for a camera that
+        // sits behind the player looking along (+sin ry, +cos ry).
         const sin = Math.sin(s.ry), cos = Math.cos(s.ry);
-        const tx = moving ? (sin * fwd + cos * strafe) * CONFIG.WALK_SPEED : 0;
-        const tz = moving ? (cos * fwd - sin * strafe) * CONFIG.WALK_SPEED : 0;
+        const tx = moving ? (sin * fwd - cos * strafe) * CONFIG.WALK_SPEED : 0;
+        const tz = moving ? (cos * fwd + sin * strafe) * CONFIG.WALK_SPEED : 0;
         const k = Math.min(1, dt * 11);
         velX += (tx - velX) * k;
         velZ += (tz - velZ) * k;
