@@ -35,9 +35,31 @@ function labelFor(key, cls) {
     return el;
 }
 
-function place(el, sx, sy) {
+function place(el, sx, sy, clampMargin = 0) {
+    const w = window.innerWidth, h = window.innerHeight;
+    // fully off-screen: hide rather than pinning to an edge
+    if (sx < -150 || sx > w + 150 || sy < -120 || sy > h + 150) {
+        el.style.display = 'none';
+        return;
+    }
+    // near an edge: nudge inward so bubbles stop clipping on phones
+    if (clampMargin) {
+        sx = Math.max(clampMargin, Math.min(w - clampMargin, sx));
+        sy = Math.max(48, Math.min(h - 10, sy));
+    }
     el.style.transform = `translate(-50%, -100%) translate(${sx}px, ${sy}px)`;
     el.style.display = 'block';
+}
+
+/** Quick fade to black around a teleport so entering buildings feels like a
+ *  scene change instead of a camera snap. */
+function fadeThrough(cb) {
+    const veil = $('fade-veil');
+    veil.classList.add('on');
+    setTimeout(() => {
+        cb();
+        veil.classList.remove('on');
+    }, 240);
 }
 
 function esc(s) {
@@ -85,7 +107,7 @@ function updateLabels() {
                     el.classList.toggle('follow', followed);
                     fillNameLabel(el, World.pictureOf(npc.pubkey),
                         (followed ? '★ ' : '') + World.nameOf(npc.pubkey).slice(0, 20));
-                    place(el, p.x, p.y);
+                    place(el, p.x, p.y, 60);
                 }
             }
             if (npc.note && d < CONFIG.BUBBLE_RANGE) {
@@ -93,7 +115,7 @@ function updateLabels() {
                 if (p) {
                     const el = labelFor('bubble:' + npc.pubkey, 'speech-bubble');
                     el.textContent = npc.note.content.slice(0, 90) + (npc.note.content.length > 90 ? '…' : '');
-                    place(el, p.x, p.y);
+                    place(el, p.x, p.y, 100);
                 }
             }
         }
@@ -104,7 +126,7 @@ function updateLabels() {
                 if (p) {
                     const el = labelFor('pname:' + pl.pubkey, 'name-label player');
                     fillNameLabel(el, pl.picture, (pl.name || 'Wanderer').slice(0, 20));
-                    place(el, p.x, p.y);
+                    place(el, p.x, p.y, 60);
                 }
             }
         }
@@ -145,12 +167,16 @@ export function doInteract() {
     if (!currentTarget) return;
     const { type, data } = currentTarget;
     if (type === 'door') {
-        Scene.enterBuilding(data);
-        toast(`Entered ${data.name}`);
-        if (data.id === 'feed-hall') openFeedPanel();
+        fadeThrough(() => {
+            Scene.enterBuilding(data);
+            toast(`Entered ${data.name}`);
+            if (data.id === 'feed-hall') openFeedPanel();
+        });
     } else if (type === 'exit') {
-        Scene.exitBuilding();
-        closeFeedPanel();
+        fadeThrough(() => {
+            Scene.exitBuilding();
+            closeFeedPanel();
+        });
     } else if (type === 'cabinet') {
         openArcade(data.game);
     } else if (type === 'npc') {

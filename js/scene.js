@@ -26,6 +26,10 @@ const keys = new Set();
 let joyVec = { x: 0, y: 0 };
 let dragging = false, lastDrag = null;
 let camPitch = 0.35;
+let velX = 0, velZ = 0, tankVel = 0; // eased self velocity
+const occluders = [];   // meshes the camera should not see through
+const treeList = [];    // {mesh, x, z} so house lots can clear their trees
+const camRay = new THREE.Raycaster();
 
 // --- world building ----------------------------------------------------------
 
@@ -40,20 +44,48 @@ function makeAvatar(color, scale = 1) {
     const mat = new THREE.MeshLambertMaterial({ color });
     const dark = new THREE.MeshLambertMaterial({ color: color.clone().multiplyScalar(0.6) });
     const skin = new THREE.MeshLambertMaterial({ color: color.clone().offsetHSL(0, -0.2, 0.15) });
-    const legs = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.4), dark);
-    legs.position.y = 0.35;
+
+    // limbs pivot at their top so they can swing while walking
+    const limb = (w, h, d, mat2) => {
+        const geo = new THREE.BoxGeometry(w, h, d);
+        geo.translate(0, -h / 2, 0);
+        return new THREE.Mesh(geo, mat2);
+    };
+    const legL = limb(0.3, 0.75, 0.38, dark);
+    legL.position.set(-0.2, 0.75, 0);
+    const legR = limb(0.3, 0.75, 0.38, dark);
+    legR.position.set(0.2, 0.75, 0);
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.0, 0.5), mat);
-    body.position.y = 1.2;
+    body.position.y = 1.25;
+    const armL = limb(0.22, 0.85, 0.28, mat);
+    armL.position.set(-0.58, 1.72, 0);
+    const armR = limb(0.22, 0.85, 0.28, mat);
+    armR.position.set(0.58, 1.72, 0);
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.75, 0.75), skin);
-    head.position.y = 2.1;
+    head.position.y = 2.15;
+    const hair = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.24, 0.8), dark);
+    hair.position.y = 2.56;
     const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.05), new THREE.MeshBasicMaterial({ color: 0x111111 }));
-    eyeL.position.set(-0.18, 2.15, 0.39);
+    eyeL.position.set(-0.18, 2.2, 0.39);
     const eyeR = eyeL.clone();
     eyeR.position.x = 0.18;
-    g.add(legs, body, head, eyeL, eyeR);
+    g.add(legL, legR, body, armL, armR, head, hair, eyeL, eyeR);
     g.scale.setScalar(scale);
     g.traverse(o => { o.castShadow = true; });
+    g.userData.limbs = { legL, legR, armL, armR };
     return g;
+}
+
+/** Swing limbs while moving; settle back when idle. */
+function animateWalk(g, moving) {
+    const limbs = g.userData.limbs;
+    if (!limbs) return;
+    const target = moving ? Math.sin(performance.now() / 110) * 0.7 : 0;
+    const ease = moving ? 1 : 0.85; // snap while walking, relax when stopping
+    limbs.legL.rotation.x += (target - limbs.legL.rotation.x) * ease;
+    limbs.legR.rotation.x += (-target - limbs.legR.rotation.x) * ease;
+    limbs.armL.rotation.x += (-target * 0.8 - limbs.armL.rotation.x) * ease;
+    limbs.armR.rotation.x += (target * 0.8 - limbs.armR.rotation.x) * ease;
 }
 
 function makeTank(color, scale = 1) {
@@ -229,10 +261,13 @@ export function init(canvas) {
         tree.add(trunk, crown);
         tree.position.set(x, 0, z);
         scene.add(tree);
+        treeList.push({ mesh: tree, x, z });
     }
 
     for (const b of BUILDINGS) {
-        scene.add(makeBuilding(b));
+        const bg = makeBuilding(b);
+        scene.add(bg);
+        occluders.push(bg);
         scene.add(makeInterior(b));
     }
 
@@ -246,6 +281,14 @@ export function init(canvas) {
         const m = makeHouse(h);
         houseMeshes.set(h.pubkey, m);
         scene.add(m);
+        occluders.push(m);
+        // clear trees off the lot
+        for (let i = treeList.length - 1; i >= 0; i--) {
+            if (Math.hypot(treeList[i].x - h.x, treeList[i].z - h.z) < 9) {
+                scene.remove(treeList[i].mesh);
+                treeList.splice(i, 1);
+            }
+        }
     });
     World.on('park', (t) => {
         const color = t.pubkey.startsWith('left:')
@@ -268,7 +311,12 @@ export function init(canvas) {
     // relay jump: everything on screen belonged to the old relay's world
     World.on('reset', () => {
         for (const [key, a] of avatars) { scene.remove(a.g); avatars.delete(key); }
-        for (const [key, m] of houseMeshes) { scene.remove(m); houseMeshes.delete(key); }
+        for (const [key, m] of houseMeshes) {
+            scene.remove(m);
+            const i = occluders.indexOf(m);
+            if (i >= 0) occluders.splice(i, 1);
+            houseMeshes.delete(key);
+        }
         for (const [key, m] of parkedMeshes) { scene.remove(m); parkedMeshes.delete(key); }
         for (const [key, m] of shellMeshes) { scene.remove(m); shellMeshes.delete(key); }
     });
@@ -434,6 +482,14 @@ function tryMove(nx, nz) {
     s.x = nx; s.z = nz;
 }
 
+/** Shortest-path angular ease so avatars turn smoothly instead of snapping. */
+function easeAngle(cur, target, k) {
+    let d = (target - cur) % (Math.PI * 2);
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    return cur + d * k;
+}
+
 function syncAvatar(key, x, z, ry, colorSeed, scale = 1, kind = 'walk') {
     let a = avatars.get(key);
     if (a && a.kind !== kind) { scene.remove(a.g); avatars.delete(key); a = null; }
@@ -442,9 +498,13 @@ function syncAvatar(key, x, z, ry, colorSeed, scale = 1, kind = 'walk') {
         a = { g, kind };
         avatars.set(key, a);
         scene.add(g);
+        g.position.set(x, 0, z);
+        g.rotation.y = ry;
     }
+    const moved = Math.hypot(x - a.g.position.x, z - a.g.position.z) > 0.012;
     a.g.position.set(x, 0, z); // remote players/npcs stay in the overworld
-    a.g.rotation.y = ry;
+    a.g.rotation.y = easeAngle(a.g.rotation.y, ry, 0.25);
+    if (kind === 'walk') animateWalk(a.g, moved);
     return a.g;
 }
 
@@ -492,19 +552,25 @@ export function update(dt) {
     const { fwd, strafe } = moveInput();
     const moving = Math.abs(fwd) + Math.abs(strafe) > 0.05;
     if (s.tank) {
-        // tank controls: A/D (or joystick x) steer, W/S throttle
+        // tank controls: A/D (or joystick x) steer, W/S throttle, with a
+        // little engine spool so it feels like driving a heavy thing
         if (Math.abs(strafe) > 0.05) s.ry -= strafe * CONFIG.TANK_TURN * dt;
-        if (Math.abs(fwd) > 0.05) {
-            const speed = fwd > 0 ? CONFIG.TANK_SPEED : CONFIG.TANK_REVERSE;
-            const dx = Math.sin(s.ry) * fwd * speed * dt;
-            const dz = Math.cos(s.ry) * fwd * speed * dt;
-            tryMove(s.x + dx, s.z + dz);
+        const targetVel = Math.abs(fwd) > 0.05 ? fwd * (fwd > 0 ? CONFIG.TANK_SPEED : CONFIG.TANK_REVERSE) : 0;
+        tankVel += (targetVel - tankVel) * Math.min(1, dt * 4);
+        if (Math.abs(tankVel) > 0.15) {
+            tryMove(s.x + Math.sin(s.ry) * tankVel * dt, s.z + Math.cos(s.ry) * tankVel * dt);
         }
-    } else if (moving) {
+        velX = velZ = 0;
+    } else {
+        // walking accelerates/brakes over a few frames instead of snapping
         const sin = Math.sin(s.ry), cos = Math.cos(s.ry);
-        const dx = (sin * fwd + cos * strafe) * CONFIG.WALK_SPEED * dt;
-        const dz = (cos * fwd - sin * strafe) * CONFIG.WALK_SPEED * dt;
-        tryMove(s.x + dx, s.z + dz);
+        const tx = moving ? (sin * fwd + cos * strafe) * CONFIG.WALK_SPEED : 0;
+        const tz = moving ? (cos * fwd - sin * strafe) * CONFIG.WALK_SPEED : 0;
+        const k = Math.min(1, dt * 11);
+        velX += (tx - velX) * k;
+        velZ += (tz - velZ) * k;
+        if (Math.hypot(velX, velZ) > 0.15) tryMove(s.x + velX * dt, s.z + velZ * dt);
+        tankVel = 0;
     }
     s.moving = moving;
 
@@ -519,6 +585,7 @@ export function update(dt) {
         selfAvatar.rotation.y = s.ry;
         // bob while walking
         selfAvatar.position.y = baseY + (moving ? Math.abs(Math.sin(performance.now() / 130)) * 0.18 : 0);
+        animateWalk(selfAvatar, moving);
     }
 
     for (const npc of World.npcs.values()) {
@@ -540,11 +607,26 @@ export function update(dt) {
     syncShells();
     stepFx();
 
-    // camera: third person behind player (further back in a tank)
+    // camera: third person behind player (further back in a tank), pulled in
+    // when a house or building sits between the camera and the player
     const camDist = s.tank ? 13 : 9, camH = (s.tank ? 4.5 : 3) + camPitch * 6;
-    const cx = s.x - Math.sin(s.ry) * camDist;
-    const cz = s.z - Math.cos(s.ry) * camDist;
-    camera.position.lerp(new THREE.Vector3(cx, baseY + camH, cz), Math.min(1, dt * 10));
+    const eye = new THREE.Vector3(s.x, baseY + 2, s.z);
+    let desired = new THREE.Vector3(s.x - Math.sin(s.ry) * camDist, baseY + camH, s.z - Math.cos(s.ry) * camDist);
+    if (!s.inside && occluders.length) {
+        const dir = desired.clone().sub(eye);
+        const len = dir.length();
+        dir.normalize();
+        camRay.set(eye, dir);
+        camRay.far = len;
+        const hits = camRay.intersectObjects(occluders, true);
+        if (hits.length) {
+            // park the camera just in front of whatever is in the way — a
+            // brief close-up beats a wall filling the screen, and it relaxes
+            // as soon as the player moves clear
+            desired = eye.clone().add(dir.multiplyScalar(Math.max(2.5, hits[0].distance - 0.6)));
+        }
+    }
+    camera.position.lerp(desired, Math.min(1, dt * 10));
     camera.lookAt(s.x, baseY + 2, s.z);
 
     renderer.render(scene, camera);
