@@ -277,6 +277,29 @@ html, body {
     box-shadow: 3px 3px 0 #000;
     cursor: pointer;
 }
+#fire-button {
+    position: absolute;
+    right: 100px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 110px);
+    width: 66px; height: 66px;
+    border-radius: 50%;
+    font-size: 26px;
+    background: #c0392b;
+    border: 3px solid #000;
+    box-shadow: 3px 3px 0 #000;
+    cursor: pointer;
+}
+#fire-button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
+#hp-pill {
+    font-family: var(--font-pixel);
+    font-size: 8px;
+    color: #ff9b9b;
+    background: var(--panel);
+    border: 2px solid #a33;
+    padding: 7px 9px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
 #chat-open-button {
     position: absolute;
     right: 22px;

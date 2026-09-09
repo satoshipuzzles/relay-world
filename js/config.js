@@ -21,6 +21,7 @@ export const CONFIG = {
     // If the operator whitelists 21150/21151, move to dedicated kinds.
     KIND_PRESENCE: 21000,
     KIND_CHAT: 21001,
+    KIND_ACTION: 21002,       // tank combat: shots, hits, kills
     TAG: 'relay-world',
 
     // Feed content that populates the world with NPCs.
@@ -38,6 +39,17 @@ export const CONFIG = {
     BUBBLE_RANGE: 24,         // show note bubbles within this range
 
     WALK_SPEED: 8,            // m/s
+
+    // Tank combat
+    TANK_SPEED: 16,           // m/s
+    TANK_REVERSE: 7,          // m/s
+    TANK_TURN: 2.4,           // rad/s
+    SHELL_SPEED: 42,          // m/s
+    SHELL_RANGE: 100,         // metres before a shell fizzles
+    SHELL_DMG: 25,
+    SHELL_HIT_RADIUS: 2.6,    // metres
+    FIRE_COOLDOWN_MS: 900,
+    MAX_HP: 100,
 };
 
 // World relays the player can jump between. Each one is its own shard: the

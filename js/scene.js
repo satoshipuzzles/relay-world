@@ -10,8 +10,13 @@ import { CONFIG, BUILDINGS } from './config.js';
 import * as World from './world.js';
 
 export let renderer, scene, camera;
-const avatars = new Map(); // key -> {group, kind}
+const avatars = new Map(); // key -> {g, kind: 'walk'|'tank'}
 let selfAvatar = null;
+let selfTank = null;
+const houseMeshes = new Map();  // pubkey -> group
+const parkedMeshes = new Map(); // pubkey -> group
+const shellMeshes = new Map();  // shell id -> mesh
+const fxList = [];              // {mesh, t0, dur, grow}
 
 // interiors live far below the map, one room per building
 const INTERIOR_Y = -200;
@@ -47,6 +52,56 @@ function makeAvatar(color, scale = 1) {
     eyeR.position.x = 0.18;
     g.add(legs, body, head, eyeL, eyeR);
     g.scale.setScalar(scale);
+    g.traverse(o => { o.castShadow = true; });
+    return g;
+}
+
+function makeTank(color, scale = 1) {
+    const g = new THREE.Group();
+    const hullMat = new THREE.MeshLambertMaterial({ color });
+    const darkMat = new THREE.MeshLambertMaterial({ color: color.clone().multiplyScalar(0.45) });
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.0, 3.8), hullMat);
+    hull.position.y = 0.9;
+    const trackL = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.8, 4.1), darkMat);
+    trackL.position.set(-1.55, 0.4, 0);
+    const trackR = trackL.clone();
+    trackR.position.x = 1.55;
+    const turret = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.75, 1.9), hullMat);
+    turret.position.y = 1.75;
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 2.5), darkMat);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.set(0, 1.8, 2.1);
+    g.add(hull, trackL, trackR, turret, barrel);
+    g.scale.setScalar(scale);
+    g.traverse(o => { o.castShadow = true; });
+    return g;
+}
+
+/** A cottage + open garage, rotated as a unit; tank spot matches world.rotY. */
+function makeHouse(house) {
+    const color = pastel(house.pubkey);
+    const g = new THREE.Group();
+    const wallMat = new THREE.MeshLambertMaterial({ color });
+    const darkMat = new THREE.MeshLambertMaterial({ color: color.clone().multiplyScalar(0.5) });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(7, 4.5, 6), wallMat);
+    body.position.y = 2.25;
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(5.6, 3.2, 4), darkMat);
+    roof.position.y = 6.1;
+    roof.rotation.y = Math.PI / 4;
+    const door = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.6, 0.3), new THREE.MeshLambertMaterial({ color: 0x1a120a }));
+    door.position.set(0, 1.3, 3.05);
+    const win = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.2, 0.25), new THREE.MeshLambertMaterial({ color: 0xbfe8ff, emissive: 0x223344 }));
+    win.position.set(2.1, 2.6, 3.05);
+    // open-front garage on the right — the tank parks just outside it
+    const gRoof = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.5, 5.2), darkMat);
+    gRoof.position.set(5.4, 3.0, 0);
+    const gBack = new THREE.Mesh(new THREE.BoxGeometry(4.4, 3.0, 0.4), wallMat);
+    gBack.position.set(5.4, 1.5, -2.4);
+    const gSide = new THREE.Mesh(new THREE.BoxGeometry(0.4, 3.0, 5.2), wallMat);
+    gSide.position.set(7.4, 1.5, 0);
+    g.add(body, roof, door, win, gRoof, gBack, gSide);
+    g.position.set(house.x, 0, house.z);
+    g.rotation.y = house.yaw;
     g.traverse(o => { o.castShadow = true; });
     return g;
 }
@@ -183,13 +238,39 @@ export function init(canvas) {
 
     selfAvatar = makeAvatar(new THREE.Color(0x8bac0f), 1.05);
     scene.add(selfAvatar);
+    selfTank = makeTank(new THREE.Color(0x8bac0f), 1.0);
+    selfTank.visible = false;
+    scene.add(selfTank);
 
-    // relay jump: every avatar belonged to the old relay's world
+    World.on('house', (h) => {
+        const m = makeHouse(h);
+        houseMeshes.set(h.pubkey, m);
+        scene.add(m);
+    });
+    World.on('park', (t) => {
+        const color = t.pubkey.startsWith('left:')
+            ? new THREE.Color(0x8bac0f) : pastel(t.pubkey);
+        const m = makeTank(color, 0.95);
+        m.position.set(t.x, 0, t.z);
+        m.rotation.y = t.ry;
+        parkedMeshes.set(t.pubkey, m);
+        scene.add(m);
+    });
+    World.on('unpark', (t) => {
+        const m = parkedMeshes.get(t.pubkey);
+        if (m) { scene.remove(m); parkedMeshes.delete(t.pubkey); }
+    });
+    World.on('fx', (fx) => {
+        if (fx.type === 'muzzle') spawnFx(fx.x, 1.8, fx.z, 0xffdd66, 0.5, 180);
+        else if (fx.type === 'boom') spawnFx(fx.x, 1.4, fx.z, 0xff7733, fx.big ? 4.5 : 1.6, fx.big ? 550 : 320);
+    });
+
+    // relay jump: everything on screen belonged to the old relay's world
     World.on('reset', () => {
-        for (const [key, a] of avatars) {
-            scene.remove(a);
-            avatars.delete(key);
-        }
+        for (const [key, a] of avatars) { scene.remove(a.g); avatars.delete(key); }
+        for (const [key, m] of houseMeshes) { scene.remove(m); houseMeshes.delete(key); }
+        for (const [key, m] of parkedMeshes) { scene.remove(m); parkedMeshes.delete(key); }
+        for (const [key, m] of shellMeshes) { scene.remove(m); shellMeshes.delete(key); }
     });
 
     window.addEventListener('resize', () => {
@@ -271,9 +352,21 @@ export function nearestInteractable() {
         return best;
     }
 
+    if (s.tank) {
+        // in a tank the only E-action is climbing out; firing is its own input
+        return { type: 'dismount', label: 'EXIT TANK', data: null, dist: 0 };
+    }
+
     for (const b of BUILDINGS) {
         const int = interiors.get(b.id);
         consider('door', `ENTER ${b.name}`, b, int.doorOutside.x, int.doorOutside.z, 4);
+    }
+    for (const t of World.parkedTanks.values()) {
+        consider('tank', 'DRIVE TANK', t, t.x, t.z, 4);
+    }
+    for (const h of World.houses.values()) {
+        const door = { x: h.x + Math.sin(h.yaw) * 3.6, z: h.z + Math.cos(h.yaw) * 3.6 };
+        consider('house', `VISIT ${World.nameOf(h.pubkey).toUpperCase().slice(0, 16)}'S HOUSE`, h, door.x, door.z, 3.5);
     }
     for (const npc of World.npcs.values()) {
         consider('npc', `TALK TO ${World.nameOf(npc.pubkey).toUpperCase().slice(0, 18)}`, npc, npc.x, npc.z);
@@ -327,34 +420,87 @@ function tryMove(nx, nz) {
     const lim = CONFIG.WORLD_SIZE / 2 - 2;
     nx = Math.max(-lim, Math.min(lim, nx));
     nz = Math.max(-lim, Math.min(lim, nz));
-    const hit = World.insideBuilding(nx, nz, 1);
-    if (hit) {
+    const pad = s.tank ? 1.6 : 0;
+    const blocked = (x, z) => World.insideBuilding(x, z, 1 + pad) || World.insideHouse(x, z, pad);
+    if (blocked(nx, nz)) {
+        // already overlapping (e.g. mounted beside a garage): move freely so
+        // you can drive out — re-entry stays blocked from outside
+        if (blocked(s.x, s.z)) { s.x = nx; s.z = nz; return; }
         // sliding: allow the axis that stays outside
-        if (!World.insideBuilding(nx, s.z, 1)) { s.x = nx; return; }
-        if (!World.insideBuilding(s.x, nz, 1)) { s.z = nz; return; }
+        if (!blocked(nx, s.z)) { s.x = nx; return; }
+        if (!blocked(s.x, nz)) { s.z = nz; return; }
         return;
     }
     s.x = nx; s.z = nz;
 }
 
-function syncAvatar(key, x, z, ry, colorSeed, scale = 1) {
+function syncAvatar(key, x, z, ry, colorSeed, scale = 1, kind = 'walk') {
     let a = avatars.get(key);
+    if (a && a.kind !== kind) { scene.remove(a.g); avatars.delete(key); a = null; }
     if (!a) {
-        a = makeAvatar(pastel(colorSeed), scale);
+        const g = kind === 'tank' ? makeTank(pastel(colorSeed), scale) : makeAvatar(pastel(colorSeed), scale);
+        a = { g, kind };
         avatars.set(key, a);
-        scene.add(a);
+        scene.add(g);
     }
-    a.position.set(x, World.self.inside && key.startsWith('sess:') ? INTERIOR_Y : 0, z);
-    a.position.y = 0; // remote players/npcs stay in the overworld
-    a.rotation.y = ry;
-    return a;
+    a.g.position.set(x, 0, z); // remote players/npcs stay in the overworld
+    a.g.rotation.y = ry;
+    return a.g;
+}
+
+function spawnFx(x, y, z, color, size, dur) {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 6),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }));
+    mesh.position.set(x, y, z);
+    scene.add(mesh);
+    fxList.push({ mesh, t0: performance.now(), dur });
+}
+
+function stepFx() {
+    const now = performance.now();
+    for (let i = fxList.length - 1; i >= 0; i--) {
+        const fx = fxList[i];
+        const t = (now - fx.t0) / fx.dur;
+        if (t >= 1) {
+            scene.remove(fx.mesh);
+            fxList.splice(i, 1);
+            continue;
+        }
+        fx.mesh.scale.setScalar(1 + t * 1.8);
+        fx.mesh.material.opacity = 0.95 * (1 - t);
+    }
+}
+
+function syncShells() {
+    for (const [id, sh] of World.shells) {
+        let m = shellMeshes.get(id);
+        if (!m) {
+            m = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 6),
+                new THREE.MeshBasicMaterial({ color: 0xffe599 }));
+            shellMeshes.set(id, m);
+            scene.add(m);
+        }
+        m.position.set(sh.x, 1.7, sh.z);
+    }
+    for (const [id, m] of shellMeshes) {
+        if (!World.shells.has(id)) { scene.remove(m); shellMeshes.delete(id); }
+    }
 }
 
 export function update(dt) {
     const s = World.self;
     const { fwd, strafe } = moveInput();
     const moving = Math.abs(fwd) + Math.abs(strafe) > 0.05;
-    if (moving) {
+    if (s.tank) {
+        // tank controls: A/D (or joystick x) steer, W/S throttle
+        if (Math.abs(strafe) > 0.05) s.ry -= strafe * CONFIG.TANK_TURN * dt;
+        if (Math.abs(fwd) > 0.05) {
+            const speed = fwd > 0 ? CONFIG.TANK_SPEED : CONFIG.TANK_REVERSE;
+            const dx = Math.sin(s.ry) * fwd * speed * dt;
+            const dz = Math.cos(s.ry) * fwd * speed * dt;
+            tryMove(s.x + dx, s.z + dz);
+        }
+    } else if (moving) {
         const sin = Math.sin(s.ry), cos = Math.cos(s.ry);
         const dx = (sin * fwd + cos * strafe) * CONFIG.WALK_SPEED * dt;
         const dz = (cos * fwd - sin * strafe) * CONFIG.WALK_SPEED * dt;
@@ -363,30 +509,39 @@ export function update(dt) {
     s.moving = moving;
 
     const baseY = s.inside ? INTERIOR_Y : 0;
-    selfAvatar.position.set(s.x, baseY, s.z);
-    selfAvatar.rotation.y = s.ry;
-    // bob while walking
-    selfAvatar.position.y = baseY + (moving ? Math.abs(Math.sin(performance.now() / 130)) * 0.18 : 0);
+    selfAvatar.visible = !s.tank;
+    selfTank.visible = s.tank && !s.inside;
+    if (s.tank) {
+        selfTank.position.set(s.x, 0, s.z);
+        selfTank.rotation.y = s.ry;
+    } else {
+        selfAvatar.position.set(s.x, baseY, s.z);
+        selfAvatar.rotation.y = s.ry;
+        // bob while walking
+        selfAvatar.position.y = baseY + (moving ? Math.abs(Math.sin(performance.now() / 130)) * 0.18 : 0);
+    }
 
     for (const npc of World.npcs.values()) {
         const a = syncAvatar('npc:' + npc.pubkey, npc.x, npc.z, npc.ry, npc.pubkey, 0.95);
         a.visible = !s.inside;
     }
     for (const p of World.players.values()) {
-        const a = syncAvatar('sess:' + p.pubkey, p.x, p.z, p.ry, p.mainPk || p.pubkey, 1.05);
+        const a = syncAvatar('sess:' + p.pubkey, p.x, p.z, p.ry, p.mainPk || p.pubkey, p.tank ? 1.0 : 1.05, p.tank ? 'tank' : 'walk');
         a.visible = !s.inside;
-        a.position.y = 0;
     }
     // drop avatars for expired players
     for (const [key, a] of avatars) {
         if (key.startsWith('sess:') && !World.players.has(key.slice(5))) {
-            scene.remove(a);
+            scene.remove(a.g);
             avatars.delete(key);
         }
     }
 
-    // camera: third person behind player
-    const camDist = 9, camH = 3 + camPitch * 6;
+    syncShells();
+    stepFx();
+
+    // camera: third person behind player (further back in a tank)
+    const camDist = s.tank ? 13 : 9, camH = (s.tank ? 4.5 : 3) + camPitch * 6;
     const cx = s.x - Math.sin(s.ry) * camDist;
     const cz = s.z - Math.cos(s.ry) * camDist;
     camera.position.lerp(new THREE.Vector3(cx, baseY + camH, cz), Math.min(1, dt * 10));

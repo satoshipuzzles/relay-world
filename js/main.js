@@ -22,6 +22,8 @@ async function begin() {
     // and our contact list so follows get a ★ in the world.
     if (Nostr.identity.mainPk) {
         World.fetchFollows(Nostr.identity.mainPk);
+        World.addHouse(Nostr.identity.mainPk); // your own house + garage + tank
+        UI.toast('You have a house here — find it on the map, your tank is in the garage', 'success');
         Nostr.subscribe([{ kinds: [0], authors: [Nostr.identity.mainPk], limit: 1 }]);
         Nostr.on('event', (subId, ev) => {
             if (ev.kind === 0 && ev.pubkey === Nostr.identity.mainPk) {

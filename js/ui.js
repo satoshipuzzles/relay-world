@@ -125,13 +125,20 @@ function updateInteract() {
     const prompt = $('interact-prompt');
     const btn = $('action-button');
     if (currentTarget) {
-        prompt.textContent = `[E] ${currentTarget.label}`;
+        prompt.textContent = currentTarget.type === 'dismount'
+            ? '[SPACE] FIRE · [E] EXIT TANK'
+            : `[E] ${currentTarget.label}`;
         prompt.classList.remove('hide');
         btn.classList.remove('hide');
     } else {
         prompt.classList.add('hide');
         btn.classList.add('hide');
     }
+    const inTank = World.self.tank && !World.self.inside;
+    $('fire-button').classList.toggle('hide', !inTank);
+    const hpPill = $('hp-pill');
+    hpPill.classList.toggle('hide', !inTank && World.self.hp >= CONFIG.MAX_HP);
+    hpPill.textContent = '❤ ' + Math.max(0, World.self.hp);
 }
 
 export function doInteract() {
@@ -148,6 +155,15 @@ export function doInteract() {
         openArcade(data.game);
     } else if (type === 'npc') {
         openProfile(data.pubkey, data.note);
+    } else if (type === 'tank') {
+        World.mountTank(data);
+        toast('Tank mounted — SPACE or 🔥 fires, E climbs out', 'success');
+    } else if (type === 'dismount') {
+        World.dismountTank();
+        toast('Left the tank — it stays parked here');
+    } else if (type === 'house') {
+        const npc = World.npcs.get(data.pubkey);
+        openProfile(data.pubkey, npc ? npc.note : null);
     } else if (type === 'player') {
         if (data.mainPk) openProfile(data.mainPk, null);
         else toast(`${data.name} is exploring as a guest`);
@@ -310,6 +326,8 @@ function drawMap() {
         ctx.textAlign = 'center';
         ctx.fillText(b.name, px(b.x), pz(b.z - b.d / 2) - 4);
     }
+    ctx.fillStyle = '#7a6a4a';
+    for (const h of World.houses.values()) ctx.fillRect(px(h.x) - 2, pz(h.z) - 2, 5, 5);
     ctx.fillStyle = '#ffe599';
     for (const npc of World.npcs.values()) ctx.fillRect(px(npc.x) - 2, pz(npc.z) - 2, 4, 4);
     ctx.fillStyle = '#00ffff';
@@ -338,6 +356,13 @@ function toggleMap(force) {
 
 export function init() {
     World.on('chat', addChatRow);
+    World.on('fx', (fx) => {
+        if (fx.type === 'landed') toast(`🎯 Hit ${fx.name}!`, 'success');
+        else if (fx.type === 'killed') toast(`💥 DESTROYED ${fx.name}!`, 'success');
+        else if (fx.type === 'died') toast(`💥 Destroyed by ${fx.by} — respawned at the plaza`, 'error');
+        else if (fx.type === 'hurt') toast(`💢 Hit! HP ${World.self.hp}`, 'error');
+    });
+    $('fire-button').addEventListener('click', () => World.fire());
 
     $('profile-close').addEventListener('click', () => $('profile-popup').classList.add('hide'));
     $('relay-pill').addEventListener('click', () => toggleRelayPanel());
@@ -359,7 +384,10 @@ export function init() {
 
     window.addEventListener('keydown', (e) => {
         if (e.target.tagName === 'INPUT') return;
-        if (e.code === 'KeyE' || e.code === 'Space') doInteract();
+        if (e.code === 'Space' || e.code === 'KeyF') {
+            if (World.self.tank) World.fire();
+            else if (e.code === 'Space') doInteract();
+        } else if (e.code === 'KeyE') doInteract();
         else if (e.code === 'KeyM') toggleMap();
         else if (e.code === 'Enter') openChatInput();
         else if (e.code === 'Escape') {
