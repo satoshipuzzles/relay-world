@@ -30,9 +30,11 @@ export const parkedTanks = new Map(); // pubkey -> {x, z, ry, pubkey}
 export const shells = new Map();   // id -> {x, z, ry, dist, owner}
 export const bullets = new Map();  // id -> {x, z, ry, dist, owner, w}
 export const pickups = new Map();  // id -> {id, x, z, w, takenUntil}
+export const score = new Map();    // session pubkey -> {name, kills, deaths}
+export const round = { height: 0, since: 0 }; // current Bitcoin block = current round
 let shellSerial = 0;
 
-const events = { chat: [], npc: [], note: [], reset: [], house: [], park: [], unpark: [], fx: [], pickup: [] };
+const events = { chat: [], npc: [], note: [], reset: [], house: [], park: [], unpark: [], fx: [], pickup: [], round: [], score: [], feed: [] };
 export function on(type, fn) { events[type].push(fn); }
 function emit(type, ...a) { for (const fn of events[type]) fn(...a); }
 
@@ -245,12 +247,18 @@ function handleEvent(subId, ev) {
         } else if (d.a === 'gun' && WEAPONS[d.w] && typeof d.x === 'number' && typeof d.z === 'number' && Array.isArray(d.rys)) {
             for (const ry of d.rys.slice(0, 8)) spawnBullet(ev.pubkey, d.w, d.x, d.z, +ry || 0);
             emit('fx', { type: 'muzzle', x: d.x, z: d.z });
-        } else if ((d.a === 'hit' || d.a === 'kill') && d.shooter === Nostr.identity.sessionPk) {
-            emit('fx', { type: d.a === 'kill' ? 'killed' : 'landed', name: String(d.name || 'someone').slice(0, 30) });
-            if (d.a === 'kill' && typeof d.x === 'number') emit('fx', { type: 'boom', x: d.x, z: d.z, big: true });
-        } else if (d.a === 'kill' && typeof d.x === 'number') {
-            // bystander view of someone else's kill
-            emit('fx', { type: 'boom', x: d.x, z: d.z, big: true });
+        } else if (d.a === 'hit' || d.a === 'kill') {
+            // every client tallies every kill it hears exactly once: victims
+            // tally their own at publish time, everyone else tallies here
+            if (d.a === 'kill' && typeof d.shooter === 'string') {
+                tallyKill(d.shooter, d.sName, ev.pubkey, d.name, d.w);
+            }
+            if (d.shooter === Nostr.identity.sessionPk) {
+                emit('fx', { type: d.a === 'kill' ? 'killed' : 'landed', name: String(d.name || 'someone').slice(0, 30) });
+            }
+            if (d.a === 'kill' && typeof d.x === 'number') {
+                emit('fx', { type: 'boom', x: d.x, z: d.z, big: true });
+            }
         }
     } else if (ev.kind === CONFIG.KIND_CHAT) {
         let d;
@@ -388,8 +396,10 @@ function damageSelf(owner, w, dmg, x, z) {
         w,
         x: +self.x.toFixed(1), z: +self.z.toFixed(1),
     }));
-    if (dead) respawn(shooter ? shooter.name : 'someone');
-    else emit('fx', { type: 'hurt' });
+    if (dead) {
+        tallyKill(owner, shooter ? shooter.name : null, Nostr.identity.sessionPk, Nostr.identity.name, w);
+        respawn(shooter ? shooter.name : 'someone');
+    } else emit('fx', { type: 'hurt' });
 }
 
 function stepBullets(dt) {
@@ -419,6 +429,91 @@ function stepBullets(dt) {
         }
     }
 }
+
+/** One kill = one scoreboard line on every client that heard it. */
+function tallyKill(shooterPk, shooterName, victimPk, victimName, w) {
+    const s = score.get(shooterPk) || { name: '', kills: 0, deaths: 0 };
+    s.kills++;
+    if (shooterName) s.name = String(shooterName).slice(0, 30);
+    score.set(shooterPk, s);
+    const v = score.get(victimPk) || { name: '', kills: 0, deaths: 0 };
+    v.deaths++;
+    if (victimName) v.name = String(victimName).slice(0, 30);
+    score.set(victimPk, v);
+    emit('score');
+    emit('feed', {
+        shooter: String(shooterName || 'someone').slice(0, 24),
+        victim: String(victimName || 'someone').slice(0, 24),
+        w,
+    });
+}
+
+// --- rounds: one Bitcoin block each ------------------------------------------
+
+function newRound(height) {
+    const first = !round.height;
+    if (!first && height !== round.height) {
+        let winner = null;
+        for (const [pk, s] of score) {
+            if (s.kills > 0 && (!winner || s.kills > winner.kills)) winner = { ...s, pk };
+        }
+        emit('round', { height, winner });
+    }
+    round.height = height;
+    round.since = Date.now();
+    score.clear();
+    placePickups(height);
+    emit('score');
+}
+
+// Primary clock: mempool.guide's websocket (CORS-exempt, pushes new blocks
+// the moment they're mined, so rounds end live). Fallback: REST polling.
+let blockWs = null;
+let blockWsAlive = false;
+
+function connectBlockWs() {
+    let sock;
+    try { sock = new WebSocket(CONFIG.BLOCK_WS); } catch { return; }
+    blockWs = sock;
+    const guard = setTimeout(() => {
+        if (sock.readyState === WebSocket.CONNECTING) sock.close();
+    }, 8000);
+    sock.onopen = () => {
+        clearTimeout(guard);
+        sock.send(JSON.stringify({ action: 'want', data: ['blocks'] }));
+    };
+    sock.onmessage = (msg) => {
+        let m;
+        try { m = JSON.parse(msg.data); } catch { return; }
+        let h = null;
+        if (Array.isArray(m.blocks) && m.blocks.length) h = m.blocks[m.blocks.length - 1].height;
+        if (m.block && typeof m.block.height === 'number') h = m.block.height;
+        if (typeof h === 'number' && h > 0) {
+            blockWsAlive = true;
+            if (h !== round.height) newRound(h);
+        }
+    };
+    sock.onerror = () => { /* onclose follows */ };
+    sock.onclose = () => {
+        clearTimeout(guard);
+        blockWsAlive = false;
+        blockWs = null;
+        setTimeout(connectBlockWs, 15000 + Math.random() * 10000);
+    };
+}
+
+async function pollBlockFallback() {
+    if (blockWsAlive) return; // the live feed owns the clock
+    try {
+        const res = await fetch(CONFIG.BLOCK_API_FALLBACK, { signal: AbortSignal.timeout(7000) });
+        const h = parseInt(await res.text(), 10);
+        if (Number.isFinite(h) && h > 0 && h !== round.height && !blockWsAlive) newRound(h);
+    } catch { /* next tick */ }
+}
+
+/** console/test handle — lets a verify script end a round without waiting
+ *  ~10 minutes for a real block. Not wired to any UI. */
+export function forceRound(height) { newRound(height); }
 
 function collectPickups(now) {
     if (self.inside || self.tank) return;
@@ -493,12 +588,15 @@ let started = false;
 
 export function start() {
     started = true;
-    placePickups(0); // reseeded per Bitcoin block once the round clock knows one
+    placePickups(0); // reseeded as soon as the block poller learns the tip
     const since = Math.floor(Date.now() / 1000);
     Nostr.on('event', handleEvent);
     Nostr.subscribe([{ kinds: CONFIG.FEED_KINDS, limit: CONFIG.FEED_LIMIT }]);
     Nostr.subscribe([{ kinds: [CONFIG.KIND_PRESENCE, CONFIG.KIND_CHAT, CONFIG.KIND_ACTION], '#t': [CONFIG.TAG], since }]);
     setInterval(flushProfileQueue, 2500);
+    connectBlockWs();
+    setTimeout(pollBlockFallback, 6000); // cover a dead ws at boot
+    setInterval(pollBlockFallback, CONFIG.BLOCK_POLL_MS);
 }
 
 /**
@@ -512,6 +610,7 @@ export async function switchRelay(url) {
     parkedTanks.clear();
     shells.clear();
     bullets.clear();
+    score.clear(); // new relay, new opponents — the round's slate wipes
     feedNotes.length = 0;
     if (self.tank) { self.tank = false; self.hp = CONFIG.MAX_HP; }
     emit('reset');

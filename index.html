@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Relay World — Explore Nostr as a living world</title>
-    <meta name="description" content="Explore the Cool Feeds relay as a 3D world. Meet npubs, read their notes, enter buildings and play tank games.">
+    <title>Grand Theft Relay — Relay World</title>
+    <meta name="description" content="Grand Theft Relay: an open-world Nostr deathmatch. Guns lying around, most kills per Bitcoin block wins the round. Jump relays, meet npubs, drive tanks.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
@@ -29,9 +29,9 @@
                 <div class="triforce left"></div>
                 <div class="triforce right"></div>
             </div>
-            <h1>RELAY WORLD</h1>
-            <p class="tagline">IT IS DANGEROUS TO GO ALONE! TAKE THIS...</p>
-            <p class="sub">Explore Nostr relays as living worlds. Meet npubs, read their notes, enter buildings, play tank games — and jump from relay to relay.</p>
+            <h1>GRAND THEFT RELAY</h1>
+            <p class="tagline">MOST KILLS PER BITCOIN BLOCK WINS THE ROUND</p>
+            <p class="sub">An open-world Nostr deathmatch. Guns are lying around the map — grab one and hunt. Every new block mined ends the round, crowns the winner and reshuffles the weapons. Tanks, houses and relay-jumping included.</p>
             <div id="login-options">
                 <button id="login-nostr" class="primary-button">CONNECT NOSTR</button>
                 <button id="login-guest" class="secondary-button">PLAY AS GUEST</button>
@@ -39,8 +39,8 @@
             <div id="login-status"></div>
             <div class="instructions">
                 <p><strong>MOVE:</strong> WASD / arrows &nbsp;·&nbsp; touch: joystick</p>
-                <p><strong>LOOK:</strong> drag &nbsp;·&nbsp; <strong>INTERACT:</strong> E / tap [!]</p>
-                <p><strong>CHAT:</strong> Enter &nbsp;·&nbsp; <strong>MAP:</strong> M</p>
+                <p><strong>FIRE:</strong> Space / F / 🔥 &nbsp;·&nbsp; <strong>INTERACT:</strong> E</p>
+                <p><strong>SCORES:</strong> Tab &nbsp;·&nbsp; <strong>CHAT:</strong> Enter &nbsp;·&nbsp; <strong>MAP:</strong> M</p>
             </div>
         </div>
     </div>
@@ -54,6 +54,16 @@
             <div id="online-pill">👥 <span id="online-count">1</span></div>
             <button id="map-toggle" class="pill-button" title="Map (M)">🗺️</button>
         </div>
+        <div id="round-bar">
+            <button id="block-pill" title="Current round — scores (Tab)">⛏ …</button>
+            <button id="kills-pill" title="Your kills this round — scores (Tab)">💀 0</button>
+        </div>
+        <div id="kill-feed"></div>
+        <div id="round-splash" class="hide">
+            <div id="splash-block"></div>
+            <div id="splash-winner"></div>
+            <div id="splash-sub"></div>
+        </div>
         <div id="interact-prompt" class="hide"></div>
         <div id="chat-box">
             <div id="chat-log"></div>
@@ -66,6 +76,17 @@
         <button id="action-button" class="hide">E</button>
         <button id="fire-button" class="hide">🔥</button>
         <button id="chat-open-button">💬</button>
+    </div>
+
+    <!-- Scoreboard (hold Tab / tap a round pill) -->
+    <div id="score-overlay" class="hide">
+        <div id="score-panel">
+            <h3>GRAND THEFT RELAY</h3>
+            <div id="score-block"></div>
+            <div class="score-row score-head"><span>#</span><span class="score-name">PLAYER</span><span>K / D</span></div>
+            <div id="score-rows"></div>
+            <div class="score-foot">Most kills when the next block is mined wins the round · weapons reshuffle every block</div>
+        </div>
     </div>
 
     <!-- Full map overlay -->

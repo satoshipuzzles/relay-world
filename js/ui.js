@@ -350,6 +350,63 @@ function closeChatInput() {
     $('chat-input').blur();
 }
 
+// --- Grand Theft Relay: scoreboard, kill feed, round splash --------------------
+
+function renderScore() {
+    const body = $('score-rows');
+    body.textContent = '';
+    const rows = [...World.score.entries()].map(([pk, s]) => ({ pk, ...s }));
+    if (!rows.some(r => r.pk === Nostr.identity.sessionPk)) {
+        rows.push({ pk: Nostr.identity.sessionPk, name: Nostr.identity.name, kills: 0, deaths: 0 });
+    }
+    rows.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+    rows.slice(0, 12).forEach((r, i) => {
+        const div = document.createElement('div');
+        div.className = 'score-row' + (r.pk === Nostr.identity.sessionPk ? ' me' : '');
+        const rank = document.createElement('span');
+        rank.textContent = i === 0 && r.kills > 0 ? '👑' : String(i + 1);
+        const name = document.createElement('span');
+        name.className = 'score-name';
+        name.textContent = (r.name || 'Wanderer').slice(0, 22);
+        const kd = document.createElement('span');
+        kd.textContent = r.kills + ' / ' + r.deaths;
+        div.append(rank, name, kd);
+        body.appendChild(div);
+    });
+    $('score-block').textContent = World.round.height
+        ? `ROUND · BLOCK ${World.round.height}` : 'ROUND · WAITING FOR CHAIN…';
+}
+
+function toggleScore(force) {
+    const el = $('score-overlay');
+    const show = force !== undefined ? force : el.classList.contains('hide');
+    if (show) renderScore();
+    el.classList.toggle('hide', !show);
+}
+
+function addKillFeedRow(f) {
+    const feed = $('kill-feed');
+    const row = document.createElement('div');
+    row.className = 'kill-row';
+    const icon = f.w === 'tank' ? '💥' : (WEAPONS[f.w] ? WEAPONS[f.w].icon : '🔫');
+    row.textContent = `${f.shooter} ${icon} ${f.victim}`;
+    feed.appendChild(row);
+    while (feed.children.length > 5) feed.firstChild.remove();
+    setTimeout(() => { row.classList.add('fade'); setTimeout(() => row.remove(), 600); }, 6000);
+}
+
+function showRoundSplash({ height, winner }) {
+    const sp = $('round-splash');
+    $('splash-block').textContent = `⛏ BLOCK ${height} MINED`;
+    $('splash-winner').textContent = winner
+        ? `👑 ${winner.name || 'a wanderer'} WINS — ${winner.kills} KILL${winner.kills === 1 ? '' : 'S'}`
+        : 'NO KILLS THIS ROUND';
+    $('splash-sub').textContent = 'scores reset · weapons reshuffled';
+    sp.classList.remove('hide');
+    clearTimeout(sp._t);
+    sp._t = setTimeout(() => sp.classList.add('hide'), 5200);
+}
+
 // --- map ---------------------------------------------------------------------
 
 function drawMap() {
@@ -402,6 +459,14 @@ function toggleMap(force) {
 
 export function init() {
     World.on('chat', addChatRow);
+    World.on('feed', addKillFeedRow);
+    World.on('round', showRoundSplash);
+    World.on('score', () => {
+        if (!$('score-overlay').classList.contains('hide')) renderScore();
+    });
+    $('block-pill').addEventListener('click', () => toggleScore());
+    $('kills-pill').addEventListener('click', () => toggleScore());
+    $('score-overlay').addEventListener('click', () => toggleScore(false));
     World.on('fx', (fx) => {
         if (fx.type === 'landed') toast(`🎯 Hit ${fx.name}!`, 'success');
         else if (fx.type === 'killed') toast(`💥 DESTROYED ${fx.name}!`, 'success');
@@ -454,17 +519,28 @@ export function init() {
             else if (e.code === 'Space') doInteract();
         } else if (e.code === 'KeyE') doInteract();
         else if (e.code === 'KeyM') toggleMap();
+        else if (e.code === 'Tab') { e.preventDefault(); toggleScore(true); }
         else if (e.code === 'Enter') openChatInput();
         else if (e.code === 'Escape') {
             $('profile-popup').classList.add('hide');
             toggleRelayPanel(false);
             if (!$('arcade-overlay').classList.contains('hide')) closeArcade();
             toggleMap(false);
+            toggleScore(false);
         }
+    });
+    window.addEventListener('keyup', (e) => {
+        if (e.code === 'Tab') toggleScore(false);
     });
 
     setInterval(() => {
         $('online-count').textContent = String(1 + World.players.size);
+        if (World.round.height) {
+            const mins = Math.floor((Date.now() - World.round.since) / 60000);
+            $('block-pill').textContent = `⛏ ${World.round.height} · ${mins}m`;
+        }
+        const my = World.score.get(Nostr.identity.sessionPk);
+        $('kills-pill').textContent = '💀 ' + (my ? my.kills : 0);
         if (mapOpen) drawMap();
         if (feedPanel) renderFeedPanel();
     }, 1000);

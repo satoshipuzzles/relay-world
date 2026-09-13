@@ -56,6 +56,15 @@ export const CONFIG = {
     PICKUP_RADIUS: 1.7,       // walk this close to grab one
     PICKUP_RESPAWN_MS: 30000, // a grabbed weapon reappears for others
     BULLET_HIT_RADIUS: 1.3,   // metres (people are smaller than tanks)
+
+    // Rounds are Bitcoin blocks: a new tip ends the round, crowns the killer
+    // with the most frags, and reshuffles every weapon on the map. The house
+    // chain is XBT via mempool.guide — its REST API sends no CORS headers, so
+    // browsers must use its WebSocket (which also pushes new blocks live).
+    // mempool.space REST is the fallback so rounds keep turning if guide dies.
+    BLOCK_WS: 'wss://mempool.guide/api/v1/ws',
+    BLOCK_API_FALLBACK: 'https://mempool.space/api/blocks/tip/height',
+    BLOCK_POLL_MS: 20000,
 };
 
 // The on-foot arsenal. Damage/fire-rate trade off Quake-style; every stat the
