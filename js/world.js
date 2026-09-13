@@ -5,7 +5,7 @@
  * deterministic home spot (hashed from their pubkey) and wanders around it,
  * carrying their latest note as a speech bubble.
  */
-import { CONFIG, BUILDINGS } from './config.js';
+import { CONFIG, BUILDINGS, WEAPONS } from './config.js';
 import * as Nostr from './nostr.js';
 
 export const self = {
@@ -15,6 +15,8 @@ export const self = {
     inside: null, // building id when indoors
     tank: false,  // mounted in a tank
     hp: CONFIG.MAX_HP,
+    weapon: null, // WEAPONS key while armed on foot
+    ammo: 0,
 };
 
 export const npcs = new Map();     // pubkey -> npc
@@ -26,9 +28,11 @@ export const follows = new Set();  // pubkeys the logged-in user follows (kind 3
 export const houses = new Map();   // pubkey -> {x, z, yaw, pubkey}
 export const parkedTanks = new Map(); // pubkey -> {x, z, ry, pubkey}
 export const shells = new Map();   // id -> {x, z, ry, dist, owner}
+export const bullets = new Map();  // id -> {x, z, ry, dist, owner, w}
+export const pickups = new Map();  // id -> {id, x, z, w, takenUntil}
 let shellSerial = 0;
 
-const events = { chat: [], npc: [], note: [], reset: [], house: [], park: [], unpark: [], fx: [] };
+const events = { chat: [], npc: [], note: [], reset: [], house: [], park: [], unpark: [], fx: [], pickup: [] };
 export function on(type, fn) { events[type].push(fn); }
 function emit(type, ...a) { for (const fn of events[type]) fn(...a); }
 
@@ -227,6 +231,7 @@ function handleEvent(subId, ev) {
         }
         p.tx = d.x; p.tz = d.z; p.try = d.ry || 0;
         p.tank = !!d.tank;
+        p.w = WEAPONS[d.w] ? d.w : null;
         p.name = d.name || 'Wanderer';
         p.picture = d.picture || null;
         p.mainPk = d.pk || null;
@@ -237,6 +242,9 @@ function handleEvent(subId, ev) {
         try { d = JSON.parse(ev.content); } catch { return; }
         if (d.a === 'shot' && typeof d.x === 'number' && typeof d.z === 'number') {
             spawnShell(ev.pubkey, d.x, d.z, +d.ry || 0);
+        } else if (d.a === 'gun' && WEAPONS[d.w] && typeof d.x === 'number' && typeof d.z === 'number' && Array.isArray(d.rys)) {
+            for (const ry of d.rys.slice(0, 8)) spawnBullet(ev.pubkey, d.w, d.x, d.z, +ry || 0);
+            emit('fx', { type: 'muzzle', x: d.x, z: d.z });
         } else if ((d.a === 'hit' || d.a === 'kill') && d.shooter === Nostr.identity.sessionPk) {
             emit('fx', { type: d.a === 'kill' ? 'killed' : 'landed', name: String(d.name || 'someone').slice(0, 30) });
             if (d.a === 'kill' && typeof d.x === 'number') emit('fx', { type: 'boom', x: d.x, z: d.z, big: true });
@@ -291,7 +299,8 @@ function spawnShell(owner, x, z, ry) {
 }
 
 export function fire() {
-    if (!self.tank || self.inside) return;
+    if (self.inside) return;
+    if (!self.tank) { fireGun(); return; }
     const now = Date.now();
     if (now - lastFire < CONFIG.FIRE_COOLDOWN_MS) return;
     lastFire = now;
@@ -305,9 +314,124 @@ export function fire() {
 function respawn(killerName) {
     emit('fx', { type: 'boom', x: self.x, z: self.z, big: true });
     self.hp = CONFIG.MAX_HP;
+    self.weapon = null; // guns drop on death — go find another
+    self.ammo = 0;
     self.x = (Math.random() - 0.5) * 16;
     self.z = 12 + Math.random() * 8;
     emit('fx', { type: 'died', by: killerName });
+}
+
+// --- Grand Theft Relay: on-foot gunplay ---------------------------------------
+
+let lastGunFire = 0;
+
+/**
+ * Weapons lying around the map. Placement is pure function of the seed, so
+ * every client lays out the identical arsenal with zero netcode; reseeding
+ * (each Bitcoin block) reshuffles the whole map at once.
+ */
+export function placePickups(seed) {
+    pickups.clear();
+    const kinds = Object.keys(WEAPONS);
+    for (let i = 0; i < CONFIG.PICKUPS_PER_ROUND; i++) {
+        const h1 = hash32('gtr:' + seed + ':' + i);
+        let x = 0, z = 12;
+        for (let att = 0; att < 12; att++) {
+            const hh = hash32('spot:' + seed + ':' + i + ':' + att);
+            const a = (hh % 6283) / 1000;
+            // half the guns fight over the plaza, half reward roaming the burbs
+            const r = (i % 2 === 0) ? 7 + (hh >>> 16) % 32 : 30 + (hh >>> 16) % 75;
+            const cx = Math.cos(a) * r, cz = Math.sin(a) * r * 0.9 - (i % 2 === 0 ? 0 : 20);
+            if (!insideBuilding(cx, cz, 2) && !insideHouse(cx, cz, 0.6)) { x = cx; z = cz; break; }
+        }
+        const w = kinds[h1 % kinds.length];
+        pickups.set('p' + seed + ':' + i, { id: 'p' + seed + ':' + i, x: +x.toFixed(1), z: +z.toFixed(1), w, takenUntil: 0 });
+    }
+    emit('pickup');
+}
+
+function spawnBullet(owner, w, x, z, ry) {
+    bullets.set(owner.slice(0, 8) + ':b' + (++shellSerial), { x, z, ry, dist: 0, owner, w });
+}
+
+export function fireGun() {
+    if (self.tank || self.inside || !self.weapon) return;
+    const W = WEAPONS[self.weapon];
+    const now = Date.now();
+    if (now - lastGunFire < W.cooldown) return;
+    if (self.ammo <= 0) return;
+    lastGunFire = now;
+    self.ammo--;
+    const rys = [];
+    for (let i = 0; i < W.pellets; i++) {
+        rys.push(+(self.ry + (Math.random() - 0.5) * 2 * W.spread).toFixed(3));
+    }
+    const x = +(self.x + Math.sin(self.ry) * 1.0).toFixed(1);
+    const z = +(self.z + Math.cos(self.ry) * 1.0).toFixed(1);
+    for (const ry of rys) spawnBullet(Nostr.identity.sessionPk, self.weapon, x, z, ry);
+    Nostr.publish(CONFIG.KIND_ACTION, JSON.stringify({ a: 'gun', w: self.weapon, x, z, rys }));
+    emit('fx', { type: 'muzzle', x, z, small: true });
+    if (self.ammo <= 0) { self.weapon = null; emit('fx', { type: 'dry' }); }
+}
+
+/** Victim-authoritative, same contract as tank shells: only my client decides
+ *  I was hit, then announces it so the shooter gets credit. */
+function damageSelf(owner, w, dmg, x, z) {
+    self.hp -= dmg;
+    const shooter = players.get(owner);
+    const dead = self.hp <= 0;
+    Nostr.publish(CONFIG.KIND_ACTION, JSON.stringify({
+        a: dead ? 'kill' : 'hit',
+        shooter: owner,
+        name: Nostr.identity.name,
+        sName: shooter ? shooter.name : undefined,
+        w,
+        x: +self.x.toFixed(1), z: +self.z.toFixed(1),
+    }));
+    if (dead) respawn(shooter ? shooter.name : 'someone');
+    else emit('fx', { type: 'hurt' });
+}
+
+function stepBullets(dt) {
+    const myRadius = self.tank ? CONFIG.SHELL_HIT_RADIUS : CONFIG.BULLET_HIT_RADIUS;
+    for (const [id, b] of bullets) {
+        const W = WEAPONS[b.w];
+        const step = W.speed * dt;
+        b.x += Math.sin(b.ry) * step;
+        b.z += Math.cos(b.ry) * step;
+        b.dist += step;
+        const expired = b.dist > W.range || insideBuilding(b.x, b.z, 0) || insideHouse(b.x, b.z);
+        const mine = b.owner === Nostr.identity.sessionPk;
+        if (expired) {
+            bullets.delete(id);
+            emit('fx', { type: 'boom', x: b.x, z: b.z, big: !!W.blast });
+            // rockets that die on a wall still shred anyone standing nearby
+            if (W.blast && !mine && !self.inside &&
+                Math.hypot(b.x - self.x, b.z - self.z) < W.blast) {
+                damageSelf(b.owner, b.w, W.dmg, b.x, b.z);
+            }
+            continue;
+        }
+        if (!mine && !self.inside && Math.hypot(b.x - self.x, b.z - self.z) < myRadius) {
+            bullets.delete(id);
+            emit('fx', { type: 'boom', x: b.x, z: b.z, big: !!W.blast });
+            damageSelf(b.owner, b.w, W.dmg, b.x, b.z);
+        }
+    }
+}
+
+function collectPickups(now) {
+    if (self.inside || self.tank) return;
+    for (const p of pickups.values()) {
+        if (p.takenUntil > now) continue;
+        if (Math.hypot(p.x - self.x, p.z - self.z) < CONFIG.PICKUP_RADIUS) {
+            p.takenUntil = now + CONFIG.PICKUP_RESPAWN_MS;
+            self.weapon = p.w;
+            self.ammo = WEAPONS[p.w].ammo;
+            emit('pickup');
+            emit('fx', { type: 'armed', w: p.w });
+        }
+    }
 }
 
 function stepShells(dt) {
@@ -326,18 +450,8 @@ function stepShells(dt) {
         if (sh.owner !== Nostr.identity.sessionPk && !self.inside &&
             Math.hypot(sh.x - self.x, sh.z - self.z) < CONFIG.SHELL_HIT_RADIUS) {
             shells.delete(id);
-            self.hp -= CONFIG.SHELL_DMG;
             emit('fx', { type: 'boom', x: sh.x, z: sh.z });
-            const shooter = players.get(sh.owner);
-            const dead = self.hp <= 0;
-            Nostr.publish(CONFIG.KIND_ACTION, JSON.stringify({
-                a: dead ? 'kill' : 'hit',
-                shooter: sh.owner,
-                name: Nostr.identity.name,
-                x: +self.x.toFixed(1), z: +self.z.toFixed(1),
-            }));
-            if (dead) respawn(shooter ? shooter.name : 'someone');
-            else emit('fx', { type: 'hurt' });
+            damageSelf(sh.owner, 'tank', CONFIG.SHELL_DMG, sh.x, sh.z);
         }
     }
 }
@@ -348,7 +462,7 @@ let lastPub = 0;
 let lastState = '';
 
 function publishPresence(now) {
-    const state = `${self.x.toFixed(1)},${self.z.toFixed(1)},${self.ry.toFixed(2)},${self.tank ? 1 : 0}`;
+    const state = `${self.x.toFixed(1)},${self.z.toFixed(1)},${self.ry.toFixed(2)},${self.tank ? 1 : 0},${self.weapon || ''}`;
     const idle = state === lastState;
     const interval = idle ? CONFIG.PRESENCE_IDLE_MS : 1000 / CONFIG.PRESENCE_HZ;
     if (now - lastPub < interval) return;
@@ -360,6 +474,7 @@ function publishPresence(now) {
         picture: Nostr.identity.picture || undefined,
         pk: Nostr.identity.mainPk || undefined,
         tank: self.tank ? 1 : undefined,
+        w: self.weapon || undefined,
     }));
 }
 
@@ -378,6 +493,7 @@ let started = false;
 
 export function start() {
     started = true;
+    placePickups(0); // reseeded per Bitcoin block once the round clock knows one
     const since = Math.floor(Date.now() / 1000);
     Nostr.on('event', handleEvent);
     Nostr.subscribe([{ kinds: CONFIG.FEED_KINDS, limit: CONFIG.FEED_LIMIT }]);
@@ -395,6 +511,7 @@ export async function switchRelay(url) {
     houses.clear();
     parkedTanks.clear();
     shells.clear();
+    bullets.clear();
     feedNotes.length = 0;
     if (self.tank) { self.tank = false; self.hp = CONFIG.MAX_HP; }
     emit('reset');
@@ -435,6 +552,8 @@ export function tick(dt, now) {
     // local player integration happens in scene.js (input lives there);
     if (started) publishPresence(now);
     stepShells(dt);
+    stepBullets(dt);
+    collectPickups(now);
 
     // NPC wandering
     for (const npc of npcs.values()) {

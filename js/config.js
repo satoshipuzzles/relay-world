@@ -50,6 +50,23 @@ export const CONFIG = {
     SHELL_HIT_RADIUS: 2.6,    // metres
     FIRE_COOLDOWN_MS: 900,
     MAX_HP: 100,
+
+    // Grand Theft Relay: on-foot deathmatch
+    PICKUPS_PER_ROUND: 16,    // weapons lying around the map
+    PICKUP_RADIUS: 1.7,       // walk this close to grab one
+    PICKUP_RESPAWN_MS: 30000, // a grabbed weapon reappears for others
+    BULLET_HIT_RADIUS: 1.3,   // metres (people are smaller than tanks)
+};
+
+// The on-foot arsenal. Damage/fire-rate trade off Quake-style; every stat the
+// victim needs to simulate a shot deterministically lives here, so the wire
+// format only ever names the weapon.
+export const WEAPONS = {
+    pistol:  { name: 'PISTOL',   icon: '🔫', color: 0x9aa7b8, dmg: 15,  speed: 55, range: 65,  cooldown: 320,  ammo: 24, pellets: 1, spread: 0.015 },
+    smg:     { name: 'SMG',      icon: '⚡', color: 0xf2c14e, dmg: 8,   speed: 60, range: 45,  cooldown: 115,  ammo: 60, pellets: 1, spread: 0.07 },
+    shotgun: { name: 'SHOTGUN',  icon: '🧨', color: 0xd35d3a, dmg: 11,  speed: 48, range: 26,  cooldown: 850,  ammo: 12, pellets: 5, spread: 0.14 },
+    rifle:   { name: 'SNIPER',   icon: '🎯', color: 0x5dd39e, dmg: 45,  speed: 95, range: 140, cooldown: 1150, ammo: 10, pellets: 1, spread: 0 },
+    rocket:  { name: 'ROCKET',   icon: '🚀', color: 0xc95df0, dmg: 100, speed: 28, range: 90,  cooldown: 1700, ammo: 4,  pellets: 1, spread: 0, blast: 5 },
 };
 
 // World relays the player can jump between. Each one is its own shard: the

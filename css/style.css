@@ -300,6 +300,29 @@ html, body {
     border-radius: 4px;
     white-space: nowrap;
 }
+#weapon-pill {
+    font-family: var(--font-pixel);
+    font-size: 8px;
+    color: var(--gold);
+    background: var(--panel);
+    border: 2px solid var(--gold);
+    padding: 7px 9px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+.pickup-label {
+    position: absolute;
+    left: 0; top: 0;
+    display: none;
+    font-family: var(--font-pixel);
+    font-size: 8px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid var(--gold);
+    padding: 3px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+}
 #chat-open-button {
     position: absolute;
     right: 22px;

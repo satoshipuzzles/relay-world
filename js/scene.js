@@ -6,7 +6,7 @@
  * quirks entirely.
  */
 import * as THREE from 'three';
-import { CONFIG, BUILDINGS } from './config.js';
+import { CONFIG, BUILDINGS, WEAPONS } from './config.js';
 import * as World from './world.js';
 
 export let renderer, scene, camera;
@@ -16,6 +16,8 @@ let selfTank = null;
 const houseMeshes = new Map();  // pubkey -> group
 const parkedMeshes = new Map(); // pubkey -> group
 const shellMeshes = new Map();  // shell id -> mesh
+const bulletMeshes = new Map(); // bullet id -> mesh
+const pickupMeshes = new Map(); // pickup id -> group
 const fxList = [];              // {mesh, t0, dur, grow}
 
 // interiors live far below the map, one room per building
@@ -173,6 +175,51 @@ function makeTank(color, scale = 1) {
     g.scale.setScalar(scale);
     g.traverse(o => { o.castShadow = true; });
     return g;
+}
+
+/** Low-poly firearm; +z is the muzzle so it points where its holder faces. */
+function makeGunMesh(w) {
+    const W = WEAPONS[w];
+    const g = new THREE.Group();
+    const mat = new THREE.MeshLambertMaterial({ color: W.color });
+    const dark = new THREE.MeshLambertMaterial({ color: 0x22242a });
+    const len = { pistol: 0.38, smg: 0.5, shotgun: 0.68, rifle: 0.85, rocket: 0.6 }[w] || 0.5;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.12, len), mat);
+    body.position.z = len * 0.25;
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.16, 0.09), dark);
+    grip.position.y = -0.12;
+    g.add(body, grip);
+    if (w === 'rocket') {
+        const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.78, 10), mat);
+        tube.rotation.x = Math.PI / 2;
+        tube.position.set(0, 0.05, 0.22);
+        g.add(tube);
+    } else {
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, len * 0.7, 8), dark);
+        barrel.rotation.x = Math.PI / 2;
+        barrel.position.set(0, 0.02, len * 0.85);
+        g.add(barrel);
+    }
+    if (w === 'rifle') {
+        const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.2, 8), dark);
+        scope.rotation.x = Math.PI / 2;
+        scope.position.set(0, 0.11, 0.15);
+        g.add(scope);
+    }
+    g.traverse(o => { o.castShadow = true; });
+    return g;
+}
+
+/** Put a weapon in (or take it out of) an avatar's right hand. */
+function armAvatar(g, w) {
+    if (g.userData.gunW === (w || null)) return;
+    if (g.userData.gunMesh) { g.remove(g.userData.gunMesh); g.userData.gunMesh = null; }
+    g.userData.gunW = w || null;
+    if (!w) return;
+    const gun = makeGunMesh(w);
+    gun.position.set(0.55, 1.12, 0.3);
+    g.add(gun);
+    g.userData.gunMesh = gun;
 }
 
 /** A cottage + open garage, rotated as a unit; tank spot matches world.rotY. */
@@ -489,7 +536,7 @@ export function init(canvas) {
         if (m) { scene.remove(m); parkedMeshes.delete(t.pubkey); }
     });
     World.on('fx', (fx) => {
-        if (fx.type === 'muzzle') spawnFx(fx.x, 1.8, fx.z, 0xffdd66, 0.5, 180);
+        if (fx.type === 'muzzle') spawnFx(fx.x, fx.small ? 1.35 : 1.8, fx.z, 0xffdd66, fx.small ? 0.26 : 0.5, fx.small ? 130 : 180);
         else if (fx.type === 'boom') spawnFx(fx.x, 1.4, fx.z, 0xff7733, fx.big ? 4.5 : 1.6, fx.big ? 550 : 320);
     });
 
@@ -716,6 +763,54 @@ function stepFx() {
     }
 }
 
+function syncPickups() {
+    const now = Date.now();
+    const t = performance.now() / 1000;
+    for (const [id, p] of World.pickups) {
+        let m = pickupMeshes.get(id);
+        if (!m) {
+            m = new THREE.Group();
+            const pad = new THREE.Mesh(new THREE.CircleGeometry(0.9, 20),
+                new THREE.MeshBasicMaterial({ color: WEAPONS[p.w].color, transparent: true, opacity: 0.35 }));
+            pad.rotation.x = -Math.PI / 2;
+            pad.position.y = 0.06;
+            const gun = makeGunMesh(p.w);
+            gun.scale.setScalar(1.9);
+            m.add(pad, gun);
+            m.userData.gun = gun;
+            m.position.set(p.x, 0, p.z);
+            pickupMeshes.set(id, m);
+            scene.add(m);
+        }
+        m.visible = p.takenUntil < now;
+        // idle spin + bob so guns on the ground read as loot, not props
+        m.userData.gun.rotation.y = t * 1.6;
+        m.userData.gun.position.y = 1.0 + Math.sin(t * 2 + p.x) * 0.12;
+    }
+    for (const [id, m] of pickupMeshes) {
+        if (!World.pickups.has(id)) { scene.remove(m); pickupMeshes.delete(id); }
+    }
+}
+
+function syncBullets() {
+    for (const [id, b] of World.bullets) {
+        let m = bulletMeshes.get(id);
+        if (!m) {
+            const rocket = !!WEAPONS[b.w].blast;
+            m = new THREE.Mesh(new THREE.SphereGeometry(rocket ? 0.22 : 0.09, 8, 6),
+                new THREE.MeshBasicMaterial({ color: rocket ? 0xff8844 : 0xfff2a8 }));
+            m.scale.z = rocket ? 1.6 : 3.4; // stretched into a tracer
+            bulletMeshes.set(id, m);
+            scene.add(m);
+        }
+        m.position.set(b.x, 1.35, b.z);
+        m.rotation.y = b.ry;
+    }
+    for (const [id, m] of bulletMeshes) {
+        if (!World.bullets.has(id)) { scene.remove(m); bulletMeshes.delete(id); }
+    }
+}
+
 function syncShells() {
     for (const [id, sh] of World.shells) {
         let m = shellMeshes.get(id);
@@ -774,6 +869,7 @@ export function update(dt) {
         selfAvatar.position.y = baseY + (moving ? Math.abs(Math.sin(performance.now() / 130)) * 0.18 : 0);
         animateWalk(selfAvatar, moving);
     }
+    armAvatar(selfAvatar, s.tank || s.inside ? null : s.weapon);
 
     for (const npc of World.npcs.values()) {
         const a = syncAvatar('npc:' + npc.pubkey, npc.x, npc.z, npc.ry, npc.pubkey, 0.95);
@@ -782,6 +878,7 @@ export function update(dt) {
     for (const p of World.players.values()) {
         const a = syncAvatar('sess:' + p.pubkey, p.x, p.z, p.ry, p.mainPk || p.pubkey, p.tank ? 1.0 : 1.05, p.tank ? 'tank' : 'walk');
         a.visible = !s.inside;
+        if (!p.tank) armAvatar(a, p.w);
     }
     // drop avatars for expired players
     for (const [key, a] of avatars) {
@@ -792,6 +889,8 @@ export function update(dt) {
     }
 
     syncShells();
+    syncBullets();
+    syncPickups();
     stepFx();
 
     // keep the sun (and its shadow frustum) centred on the player so shadows

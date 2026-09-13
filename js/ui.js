@@ -1,7 +1,7 @@
 /**
  * ui.js - HUD, projected labels, chat, profile popup, arcade overlay, map.
  */
-import { CONFIG, BUILDINGS, RELAYS } from './config.js';
+import { CONFIG, BUILDINGS, RELAYS, WEAPONS } from './config.js';
 import * as World from './world.js';
 import * as Scene from './scene.js';
 import * as Nostr from './nostr.js';
@@ -119,6 +119,19 @@ function updateLabels() {
                 }
             }
         }
+        const now = Date.now();
+        for (const p of World.pickups.values()) {
+            if (p.takenUntil > now) continue;
+            if (Math.hypot(p.x - s.x, p.z - s.z) < 24) {
+                const sp = Scene.toScreen(p.x, 2.1, p.z);
+                if (sp) {
+                    const el = labelFor('pickup:' + p.id, 'pickup-label');
+                    const W = WEAPONS[p.w];
+                    el.textContent = `${W.icon} ${W.name}`;
+                    place(el, sp.x, sp.y);
+                }
+            }
+        }
         for (const pl of World.players.values()) {
             const d = Math.hypot(pl.x - s.x, pl.z - s.z);
             if (d < CONFIG.LABEL_RANGE * 2) {
@@ -157,9 +170,16 @@ function updateInteract() {
         btn.classList.add('hide');
     }
     const inTank = World.self.tank && !World.self.inside;
-    $('fire-button').classList.toggle('hide', !inTank);
+    const armed = !World.self.tank && !World.self.inside && !!World.self.weapon;
+    $('fire-button').classList.toggle('hide', !inTank && !armed);
+    const wPill = $('weapon-pill');
+    if (armed) {
+        const W = WEAPONS[World.self.weapon];
+        wPill.textContent = `${W.icon} ${W.name} ${World.self.ammo}`;
+        wPill.classList.remove('hide');
+    } else wPill.classList.add('hide');
     const hpPill = $('hp-pill');
-    hpPill.classList.toggle('hide', !inTank && World.self.hp >= CONFIG.MAX_HP);
+    hpPill.classList.toggle('hide', !inTank && !armed && World.self.hp >= CONFIG.MAX_HP);
     hpPill.textContent = '❤ ' + Math.max(0, World.self.hp);
 }
 
@@ -387,8 +407,26 @@ export function init() {
         else if (fx.type === 'killed') toast(`💥 DESTROYED ${fx.name}!`, 'success');
         else if (fx.type === 'died') toast(`💥 Destroyed by ${fx.by} — respawned at the plaza`, 'error');
         else if (fx.type === 'hurt') toast(`💢 Hit! HP ${World.self.hp}`, 'error');
+        else if (fx.type === 'armed') {
+            const W = WEAPONS[fx.w];
+            toast(`${W.icon} Picked up ${W.name} — SPACE / 🔥 fires`, 'success');
+        }
+        else if (fx.type === 'dry') toast('Out of ammo — grab another weapon', 'error');
     });
-    $('fire-button').addEventListener('click', () => World.fire());
+    // hold-to-fire: automatics keep shooting while the button is held
+    {
+        const fb = $('fire-button');
+        let rep = null;
+        const stop = () => { if (rep) { clearInterval(rep); rep = null; } };
+        fb.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            World.fire();
+            stop();
+            rep = setInterval(() => World.fire(), 110);
+        });
+        window.addEventListener('pointerup', stop);
+        fb.addEventListener('pointercancel', stop);
+    }
 
     $('profile-close').addEventListener('click', () => $('profile-popup').classList.add('hide'));
     $('relay-pill').addEventListener('click', () => toggleRelayPanel());
@@ -411,7 +449,8 @@ export function init() {
     window.addEventListener('keydown', (e) => {
         if (e.target.tagName === 'INPUT') return;
         if (e.code === 'Space' || e.code === 'KeyF') {
-            if (World.self.tank) World.fire();
+            const armed = World.self.weapon && !World.self.inside && !World.self.tank;
+            if (World.self.tank || armed) World.fire();
             else if (e.code === 'Space') doInteract();
         } else if (e.code === 'KeyE') doInteract();
         else if (e.code === 'KeyM') toggleMap();
