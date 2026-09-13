@@ -184,7 +184,7 @@ function updateInteract() {
 }
 
 export function doInteract() {
-    if (!currentTarget) return;
+    if (!currentTarget || World.self.dead) return;
     const { type, data } = currentTarget;
     if (type === 'door') {
         fadeThrough(() => {
@@ -467,11 +467,23 @@ export function init() {
     $('block-pill').addEventListener('click', () => toggleScore());
     $('kills-pill').addEventListener('click', () => toggleScore());
     $('score-overlay').addEventListener('click', () => toggleScore(false));
+    let flashT = null;
     World.on('fx', (fx) => {
         if (fx.type === 'landed') toast(`🎯 Hit ${fx.name}!`, 'success');
         else if (fx.type === 'killed') toast(`💥 DESTROYED ${fx.name}!`, 'success');
-        else if (fx.type === 'died') toast(`💥 Destroyed by ${fx.by} — respawned at the plaza`, 'error');
-        else if (fx.type === 'hurt') toast(`💢 Hit! HP ${World.self.hp}`, 'error');
+        else if (fx.type === 'selfdeath') {
+            $('wasted-by').textContent = `killed by ${fx.by}`.toUpperCase();
+            $('wasted-overlay').classList.remove('hide');
+        }
+        else if (fx.type === 'respawned') {
+            $('wasted-overlay').classList.add('hide');
+            toast('Back on your feet at the plaza — go find a gun', 'success');
+        }
+        else if (fx.type === 'hurt') {
+            $('hit-flash').classList.add('on');
+            clearTimeout(flashT);
+            flashT = setTimeout(() => $('hit-flash').classList.remove('on'), 160);
+        }
         else if (fx.type === 'armed') {
             const W = WEAPONS[fx.w];
             toast(`${W.icon} Picked up ${W.name} — SPACE / 🔥 fires`, 'success');

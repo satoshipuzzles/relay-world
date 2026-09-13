@@ -50,6 +50,7 @@ export const CONFIG = {
     SHELL_HIT_RADIUS: 2.6,    // metres
     FIRE_COOLDOWN_MS: 900,
     MAX_HP: 100,
+    DEATH_MS: 2600,           // corpse-on-screen time before respawning
 
     // Grand Theft Relay: on-foot deathmatch
     PICKUPS_PER_ROUND: 16,    // weapons lying around the map

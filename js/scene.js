@@ -19,6 +19,9 @@ const shellMeshes = new Map();  // shell id -> mesh
 const bulletMeshes = new Map(); // bullet id -> mesh
 const pickupMeshes = new Map(); // pickup id -> group
 const fxList = [];              // {mesh, t0, dur, grow}
+const bloodFx = [];             // {mesh, vx, vy, vz, t0} flying droplets
+const bloodPools = [];          // {mesh, t0} spreading ground stains
+const corpses = [];             // {g, t0} bodies tipping over, then fading
 
 // interiors live far below the map, one room per building
 const INTERIOR_Y = -200;
@@ -38,8 +41,9 @@ let sun = null;
 // shared geometry — every avatar/tank/tree reuses these instead of allocating
 const GEO = {
     limbLeg: null, limbArm: null, body: null, head: null, hair: null, eye: null,
-    wheel: null, crown: null, trunk: null,
+    wheel: null, crown: null, trunk: null, blood: null,
 };
+const BLOOD_MAT = new THREE.MeshBasicMaterial({ color: 0xa01212 });
 
 /** Small canvas noise texture so big surfaces don't read as one flat color. */
 function noiseTexture(base, spread, size = 128) {
@@ -539,6 +543,8 @@ export function init(canvas) {
     World.on('fx', (fx) => {
         if (fx.type === 'muzzle') spawnFx(fx.x, fx.small ? 1.35 : 1.8, fx.z, 0xffdd66, fx.small ? 0.26 : 0.5, fx.small ? 130 : 180);
         else if (fx.type === 'boom') spawnFx(fx.x, 1.4, fx.z, 0xff7733, fx.big ? 4.5 : 1.6, fx.big ? 550 : 320);
+        else if (fx.type === 'blood') spawnBlood(fx.x, fx.z, fx.heavy);
+        else if (fx.type === 'death') spawnCorpse(fx.x, fx.z, fx.pubkey);
     });
 
     // relay jump: everything on screen belonged to the old relay's world
@@ -772,6 +778,77 @@ function syncAvatar(key, x, z, ry, colorSeed, scale = 1, kind = 'walk') {
     return a.g;
 }
 
+/** Red spray on any hit; kills add a spreading pool on the ground. */
+function spawnBlood(x, z, heavy) {
+    if (!GEO.blood) GEO.blood = new THREE.SphereGeometry(0.07, 6, 5);
+    const n = heavy ? 16 : 7;
+    for (let i = 0; i < n; i++) {
+        const m = new THREE.Mesh(GEO.blood, BLOOD_MAT);
+        m.position.set(x, 1.1 + Math.random() * 0.7, z);
+        scene.add(m);
+        bloodFx.push({
+            mesh: m, t0: performance.now(),
+            vx: (Math.random() - 0.5) * 5.5,
+            vy: 1.5 + Math.random() * 3.2,
+            vz: (Math.random() - 0.5) * 5.5,
+        });
+    }
+    if (heavy) {
+        const pool = new THREE.Mesh(new THREE.CircleGeometry(1.1, 16),
+            new THREE.MeshBasicMaterial({ color: 0x6e0d0d, transparent: true, opacity: 0.85 }));
+        pool.rotation.x = -Math.PI / 2;
+        pool.position.set(x, 0.055, z);
+        pool.scale.setScalar(0.25);
+        scene.add(pool);
+        bloodPools.push({ mesh: pool, t0: performance.now() });
+    }
+}
+
+/** A body at the death spot: tips over, lies in its blood, fades out. */
+function spawnCorpse(x, z, colorSeed) {
+    const g = makeAvatar(pastel(colorSeed || '00'), 1.0);
+    g.position.set(x, 0, z);
+    g.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(g);
+    corpses.push({ g, t0: performance.now() });
+}
+
+function stepBloodAndCorpses(dt) {
+    const now = performance.now();
+    for (let i = bloodFx.length - 1; i >= 0; i--) {
+        const b = bloodFx[i];
+        b.vy -= 9.8 * dt;
+        b.mesh.position.x += b.vx * dt;
+        b.mesh.position.y += b.vy * dt;
+        b.mesh.position.z += b.vz * dt;
+        if (b.mesh.position.y <= 0.05 || now - b.t0 > 1100) {
+            scene.remove(b.mesh);
+            bloodFx.splice(i, 1);
+        }
+    }
+    for (let i = bloodPools.length - 1; i >= 0; i--) {
+        const p = bloodPools[i];
+        const t = (now - p.t0) / 1000;
+        if (t > 6) { scene.remove(p.mesh); bloodPools.splice(i, 1); continue; }
+        p.mesh.scale.setScalar(Math.min(1, 0.25 + t * 0.6));
+        if (t > 4.5) p.mesh.material.opacity = 0.85 * (1 - (t - 4.5) / 1.5);
+    }
+    for (let i = corpses.length - 1; i >= 0; i--) {
+        const c = corpses[i];
+        const t = (now - c.t0) / 1000;
+        if (t > 3.2) { scene.remove(c.g); corpses.splice(i, 1); continue; }
+        // accelerating tip in the first half second, then lie still and fade
+        const tip = Math.min(1, t / 0.45);
+        c.g.rotation.x = -Math.PI / 2 * tip * tip;
+        if (t > 2.4) {
+            const o = Math.max(0, 1 - (t - 2.4) / 0.8);
+            c.g.traverse(m => {
+                if (m.material) { m.material.transparent = true; m.material.opacity = o; }
+            });
+        }
+    }
+}
+
 function spawnFx(x, y, z, color, size, dur) {
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 6),
         new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }));
@@ -861,7 +938,8 @@ function syncShells() {
 
 export function update(dt) {
     const s = World.self;
-    const { fwd, strafe } = moveInput();
+    let { fwd, strafe } = moveInput();
+    if (s.dead) { fwd = 0; strafe = 0; } // corpses don't walk
     const moving = Math.abs(fwd) + Math.abs(strafe) > 0.05;
     if (s.tank) {
         // tank controls: A/D (or joystick x) steer, W/S throttle, with a
@@ -891,7 +969,7 @@ export function update(dt) {
     s.moving = moving;
 
     const baseY = s.inside ? INTERIOR_Y : 0;
-    selfAvatar.visible = !s.tank && !fpMode;
+    selfAvatar.visible = !s.tank && !fpMode && !s.dead; // the corpse fx is the body
     selfTank.visible = s.tank && !s.inside && !fpMode;
     if (s.tank) {
         selfTank.position.set(s.x, 0, s.z);
@@ -911,7 +989,7 @@ export function update(dt) {
     }
     for (const p of World.players.values()) {
         const a = syncAvatar('sess:' + p.pubkey, p.x, p.z, p.ry, p.mainPk || p.pubkey, p.tank ? 1.0 : 1.05, p.tank ? 'tank' : 'walk');
-        a.visible = !s.inside;
+        a.visible = !s.inside && !(p.deadUntil > Date.now()); // corpse fx stands in
         if (!p.tank) armAvatar(a, p.w);
     }
     // drop avatars for expired players
@@ -926,6 +1004,7 @@ export function update(dt) {
     syncBullets();
     syncPickups();
     stepFx();
+    stepBloodAndCorpses(dt);
 
     // keep the sun (and its shadow frustum) centred on the player so shadows
     // stay sharp across the whole 400m world

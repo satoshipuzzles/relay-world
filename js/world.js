@@ -14,6 +14,7 @@ export const self = {
     moving: false,
     inside: null, // building id when indoors
     tank: false,  // mounted in a tank
+    dead: false,  // between being killed and respawning
     hp: CONFIG.MAX_HP,
     weapon: null, // WEAPONS key while armed on foot
     ammo: 0,
@@ -256,8 +257,15 @@ function handleEvent(subId, ev) {
             if (d.shooter === Nostr.identity.sessionPk) {
                 emit('fx', { type: d.a === 'kill' ? 'killed' : 'landed', name: String(d.name || 'someone').slice(0, 30) });
             }
-            if (d.a === 'kill' && typeof d.x === 'number') {
-                emit('fx', { type: 'boom', x: d.x, z: d.z, big: true });
+            if (typeof d.x === 'number' && typeof d.z === 'number') {
+                emit('fx', { type: 'blood', x: d.x, z: d.z, heavy: d.a === 'kill' });
+                if (d.a === 'kill') {
+                    // the victim's live avatar hides while their corpse lies there
+                    const p = players.get(ev.pubkey);
+                    if (p) p.deadUntil = Date.now() + CONFIG.DEATH_MS;
+                    emit('fx', { type: 'death', x: d.x, z: d.z, pubkey: ev.pubkey });
+                    emit('fx', { type: 'boom', x: d.x, z: d.z, big: true });
+                }
             }
         }
     } else if (ev.kind === CONFIG.KIND_CHAT) {
@@ -278,7 +286,7 @@ function handleEvent(subId, ev) {
 let lastFire = 0;
 
 export function mountTank(parked) {
-    if (self.tank || self.inside) return;
+    if (self.tank || self.inside || self.dead) return;
     parkedTanks.delete(parked.pubkey);
     emit('unpark', parked);
     self.tank = true;
@@ -307,7 +315,7 @@ function spawnShell(owner, x, z, ry) {
 }
 
 export function fire() {
-    if (self.inside) return;
+    if (self.inside || self.dead) return;
     if (!self.tank) { fireGun(); return; }
     const now = Date.now();
     if (now - lastFire < CONFIG.FIRE_COOLDOWN_MS) return;
@@ -319,14 +327,25 @@ export function fire() {
     emit('fx', { type: 'muzzle', x, z });
 }
 
-function respawn(killerName) {
-    emit('fx', { type: 'boom', x: self.x, z: self.z, big: true });
-    self.hp = CONFIG.MAX_HP;
+/** Dying takes a moment: your body falls where you stood, the WASTED card
+ *  shows who got you, then you come back at the plaza. */
+function beginDeath(killerName) {
+    self.dead = true;
+    self.hp = 0;
+    self.tank = false; // a killed tank is gone, not parked
     self.weapon = null; // guns drop on death — go find another
     self.ammo = 0;
-    self.x = (Math.random() - 0.5) * 16;
-    self.z = 12 + Math.random() * 8;
-    emit('fx', { type: 'died', by: killerName });
+    emit('fx', { type: 'boom', x: self.x, z: self.z, big: true });
+    emit('fx', { type: 'blood', x: self.x, z: self.z, heavy: true });
+    emit('fx', { type: 'death', x: self.x, z: self.z, pubkey: Nostr.identity.sessionPk });
+    emit('fx', { type: 'selfdeath', by: killerName });
+    setTimeout(() => {
+        self.hp = CONFIG.MAX_HP;
+        self.x = (Math.random() - 0.5) * 16;
+        self.z = 12 + Math.random() * 8;
+        self.dead = false;
+        emit('fx', { type: 'respawned' });
+    }, CONFIG.DEATH_MS);
 }
 
 // --- Grand Theft Relay: on-foot gunplay ---------------------------------------
@@ -385,6 +404,7 @@ export function fireGun() {
 /** Victim-authoritative, same contract as tank shells: only my client decides
  *  I was hit, then announces it so the shooter gets credit. */
 function damageSelf(owner, w, dmg, x, z) {
+    if (self.dead) return; // corpses don't take more damage
     self.hp -= dmg;
     const shooter = players.get(owner);
     const dead = self.hp <= 0;
@@ -398,8 +418,11 @@ function damageSelf(owner, w, dmg, x, z) {
     }));
     if (dead) {
         tallyKill(owner, shooter ? shooter.name : null, Nostr.identity.sessionPk, Nostr.identity.name, w);
-        respawn(shooter ? shooter.name : 'someone');
-    } else emit('fx', { type: 'hurt' });
+        beginDeath(shooter ? shooter.name : 'someone');
+    } else {
+        emit('fx', { type: 'blood', x: self.x, z: self.z });
+        emit('fx', { type: 'hurt' });
+    }
 }
 
 function stepBullets(dt) {
@@ -516,7 +539,7 @@ async function pollBlockFallback() {
 export function forceRound(height) { newRound(height); }
 
 function collectPickups(now) {
-    if (self.inside || self.tank) return;
+    if (self.inside || self.tank || self.dead) return;
     for (const p of pickups.values()) {
         if (p.takenUntil > now) continue;
         if (Math.hypot(p.x - self.x, p.z - self.z) < CONFIG.PICKUP_RADIUS) {
