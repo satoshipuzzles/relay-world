@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { CONFIG, BUILDINGS, WEAPONS } from './config.js';
 import * as World from './world.js';
+import * as Nostr from './nostr.js';
 
 export let renderer, scene, camera;
 const avatars = new Map(); // key -> {g, kind: 'walk'|'tank'}
@@ -23,6 +24,7 @@ const bloodFx = [];             // {mesh, vx, vy, vz, t0} flying droplets
 const bloodPools = [];          // {mesh, t0} spreading ground stains
 const corpses = [];             // {g, t0} bodies tipping over, then fading
 const carMeshes = [];           // parallel to World.cars (static routes)
+const pedMeshes = [];           // parallel to World.peds
 
 // interiors live far below the map, one room per building
 const INTERIOR_Y = -200;
@@ -481,7 +483,7 @@ export function init(canvas) {
 
     // ground: noise-textured grass so it doesn't read as one flat green sheet
     const S = CONFIG.WORLD_SIZE;
-    const grassTex = noiseTexture(0x5f9c4b, 0.028);
+    const grassTex = noiseTexture(0x6b8d54, 0.028); // dry-olive, not lego green
     grassTex.repeat.set(40, 40);
     grassTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(S, S), new THREE.MeshLambertMaterial({ map: grassTex }));
@@ -566,13 +568,83 @@ export function init(canvas) {
         carMeshes.push(m);
     }
 
+    // citizens — no shadows and distance-culled: they're small and numerous
+    for (const p of World.peds) {
+        const m = makeAvatar(new THREE.Color(p.color), 0.92);
+        m.traverse(o => { o.castShadow = false; });
+        scene.add(m);
+        pedMeshes.push(m);
+    }
+
+    // streetlights: no real point lights (perf), just emissive heads
+    {
+        const poleMat = new THREE.MeshLambertMaterial({ color: 0x2a2d33 });
+        const headMat = new THREE.MeshBasicMaterial({ color: 0xfff2b8 });
+        const poleGeo = new THREE.CylinderGeometry(0.09, 0.13, 6, 6);
+        const armGeo = new THREE.BoxGeometry(0.12, 0.12, 1.6);
+        const headGeo = new THREE.BoxGeometry(0.36, 0.16, 0.7);
+        const lamp = (x, z, ry) => {
+            const g = new THREE.Group();
+            const pole = new THREE.Mesh(poleGeo, poleMat);
+            pole.position.y = 3;
+            const arm = new THREE.Mesh(armGeo, poleMat);
+            arm.position.set(0, 5.9, 0.75);
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.set(0, 5.8, 1.35);
+            g.add(pole, arm, head);
+            g.position.set(x, 0, z);
+            g.rotation.y = ry;
+            scene.add(g);
+        };
+        for (const gz of [50, 82, 114]) {
+            for (const gx of [-80, -16, 48]) lamp(gx, gz - 5.2, 0);
+            for (const gx of [-48, 16, 80]) lamp(gx, gz + 5.2, Math.PI);
+        }
+        for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2;
+            lamp(Math.cos(a) * 24.5, Math.sin(a) * 24.5, -a - Math.PI / 2);
+        }
+    }
+
+    // rooftop billboards on the three tallest towers — abstract panels, no text
+    {
+        const tallest = [...World.cityBlocks].sort((a, b) => b.h - a.h).slice(0, 3);
+        tallest.forEach((b, i) => {
+            const c = document.createElement('canvas');
+            c.width = 64; c.height = 32;
+            const ctx = c.getContext('2d');
+            const grads = [['#ff8a3d', '#c22a6e'], ['#3dc9ff', '#2a3fc2'], ['#ffd23d', '#c2662a']][i];
+            const grad = ctx.createLinearGradient(0, 0, 64, 32);
+            grad.addColorStop(0, grads[0]);
+            grad.addColorStop(1, grads[1]);
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 64, 32);
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.beginPath();
+            ctx.arc(16, 16, 8, 0, 7);
+            ctx.fill();
+            ctx.fillRect(30, 12, 26, 3);
+            ctx.fillRect(30, 19, 18, 3);
+            const tex = new THREE.CanvasTexture(c);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            const panel = new THREE.Mesh(new THREE.PlaneGeometry(10, 5),
+                new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+            panel.position.set(b.x, b.h + 3.6, b.z);
+            panel.rotation.y = i * 1.2;
+            const legs = new THREE.Mesh(new THREE.BoxGeometry(0.25, 2.4, 0.25),
+                new THREE.MeshLambertMaterial({ color: 0x2a2d33 }));
+            legs.position.set(b.x, b.h + 1.2, b.z);
+            scene.add(panel, legs);
+        });
+    }
+
     // scattered trees, deterministic — leafy sphere clusters, not cones
     if (!GEO.trunk) {
         GEO.trunk = new THREE.CylinderGeometry(0.35, 0.5, 2.8, 8);
         GEO.crown = new THREE.SphereGeometry(1, 10, 8);
     }
     const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2b });
-    const crownMats = [new THREE.MeshLambertMaterial({ color: 0x3f7a2a }), new THREE.MeshLambertMaterial({ color: 0x33691e })];
+    const crownMats = [new THREE.MeshLambertMaterial({ color: 0x4c7a38 }), new THREE.MeshLambertMaterial({ color: 0x40682c })];
     for (let i = 0; i < 80; i++) {
         const a = i * 2.399963; // golden angle
         const r = 26 + (i * 37 % 150);
@@ -608,9 +680,11 @@ export function init(canvas) {
         scene.add(makeInterior(b));
     }
 
-    selfAvatar = makeAvatar(new THREE.Color(0x8bac0f), 1.05);
+    // your outfit matches the colour other players already see for you
+    const selfColor = pastel(Nostr.identity.sessionPk || '00');
+    selfAvatar = makeAvatar(selfColor, 1.05);
     scene.add(selfAvatar);
-    selfTank = makeTank(new THREE.Color(0x8bac0f), 1.0);
+    selfTank = makeTank(selfColor, 1.0);
     selfTank.visible = false;
     scene.add(selfTank);
 
@@ -644,7 +718,7 @@ export function init(canvas) {
         if (fx.type === 'muzzle') spawnFx(fx.x, fx.small ? 1.35 : 1.8, fx.z, 0xffdd66, fx.small ? 0.26 : 0.5, fx.small ? 130 : 180);
         else if (fx.type === 'boom') spawnFx(fx.x, 1.4, fx.z, 0xff7733, fx.big ? 4.5 : 1.6, fx.big ? 550 : 320);
         else if (fx.type === 'blood') spawnBlood(fx.x, fx.z, fx.heavy);
-        else if (fx.type === 'death') spawnCorpse(fx.x, fx.z, fx.pubkey);
+        else if (fx.type === 'death') spawnCorpse(fx.x, fx.z, fx.pubkey, fx.color);
     });
 
     // relay jump: everything on screen belonged to the old relay's world
@@ -905,8 +979,8 @@ function spawnBlood(x, z, heavy) {
 }
 
 /** A body at the death spot: tips over, lies in its blood, fades out. */
-function spawnCorpse(x, z, colorSeed) {
-    const g = makeAvatar(pastel(colorSeed || '00'), 1.0);
+function spawnCorpse(x, z, colorSeed, colorHex) {
+    const g = makeAvatar(colorHex ? new THREE.Color(colorHex) : pastel(colorSeed || '00'), 1.0);
     g.position.set(x, 0, z);
     g.rotation.y = Math.random() * Math.PI * 2;
     scene.add(g);
@@ -1100,13 +1174,28 @@ export function update(dt) {
         }
     }
 
+    // ambient life is distance-culled — the fog swallows it out there anyway
     World.cars.forEach((c, i) => {
         const m = carMeshes[i];
         if (!m) return;
-        m.visible = !s.inside;
+        m.visible = !s.inside && Math.hypot(c.x - s.x, c.z - s.z) < 150;
+        if (!m.visible) return;
         m.position.set(c.x, 0, c.z);
         m.rotation.y = c.ry;
     });
+    {
+        const now = Date.now();
+        World.peds.forEach((p, i) => {
+            const m = pedMeshes[i];
+            if (!m) return;
+            m.visible = !s.inside && p.deadUntil <= now && // corpse fx stands in
+                Math.hypot(p.x - s.x, p.z - s.z) < 110;
+            if (!m.visible) return;
+            m.position.set(p.x, 0, p.z);
+            m.rotation.y = easeAngle(m.rotation.y, p.ry, 0.25);
+            animateWalk(m, true);
+        });
+    }
 
     syncShells();
     syncBullets();

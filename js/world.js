@@ -133,12 +133,75 @@ function buildTraffic() {
 }
 buildTraffic();
 
+// --- pedestrians -------------------------------------------------------------
+// Ambient citizens: sidewalk strollers, plaza walkers and jaywalkers. Pure
+// local ambience (no netcode) — but cars flatten them and bullets drop them,
+// with the same blood-and-corpse treatment as players.
+
+export const peds = []; // {x, z, ry, path, s, speed, color, deadUntil, seed}
+const PED_COLORS = [0x8a7f72, 0x6d7b8a, 0x7d6a5a, 0x5a7d6a, 0x84766e, 0x707a64, 0x8a6d7b];
+
+function linePath(x0, z0, x1, z1) {
+    const dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz), P = 2 * L;
+    return (s) => {
+        s = ((s % P) + P) % P;
+        const t = s < L ? s : P - s;
+        const dir = s < L ? 1 : -1;
+        return { x: x0 + dx / L * t, z: z0 + dz / L * t, dx: dx / L * dir, dz: dz / L * dir };
+    };
+}
+
+function buildPeds() {
+    const add = (path, s, speed) => peds.push({
+        path, s, speed,
+        color: PED_COLORS[peds.length % PED_COLORS.length],
+        seed: ((hash32('ped:' + peds.length) >>> 0).toString(16).padStart(8, '0')).repeat(4),
+        x: 0, z: 0, ry: 0, deadUntil: 0,
+    });
+    // plaza strollers, inside the ring road
+    for (let i = 0; i < 4; i++) add(circlePath(0, 0, 12.5, i % 2 ? 1 : -1), i * 20, 1.3 + i * 0.15);
+    // downtown sidewalk loops around four of the blocks
+    for (const [bx, bz] of [[-48, 66], [16, 66], [-16, 98], [48, 98]]) {
+        add(rectPath(bx - 13, bz - 13, bx + 13, bz + 13), (bx + bz) % 60, 1.5);
+        add(rectPath(bx - 13, bz - 13, bx + 13, bz + 13), 50 + (bx * 2 + bz) % 40, 1.35);
+    }
+    // jaywalkers: cross the downtown car lanes — traffic does not brake
+    add(linePath(-40, 45, -40, 55), 0, 1.2);
+    add(linePath(24, 45, 24, 55), 4, 1.4);
+    add(linePath(-58, 77, -58, 87), 2, 1.3);
+    add(linePath(40, 109, 40, 119), 6, 1.25);
+    add(linePath(-27, 60, -37, 60), 3, 1.1); // wanders along inside a lane
+    add(linePath(59, 82, 69, 82), 5, 1.15);
+}
+buildPeds();
+
+function pedDie(p, now) {
+    p.deadUntil = now + 15000; // the body fades; the walker returns later
+    emit('fx', { type: 'blood', x: p.x, z: p.z, heavy: true });
+    emit('fx', { type: 'death', x: p.x, z: p.z, pubkey: p.seed, color: p.color });
+}
+
+function stepPeds(dt, now) {
+    for (const p of peds) {
+        if (p.deadUntil > now) continue;
+        if (p.deadUntil) { p.deadUntil = 0; p.s += 40; } // rejoin further along
+        p.s += p.speed * dt;
+        const pos = p.path(p.s);
+        p.x = pos.x; p.z = pos.z;
+        p.ry = Math.atan2(pos.dx, pos.dz);
+    }
+}
+
 function stepTraffic(dt, now) {
     for (const c of cars) {
         c.s += c.speed * dt;
         const p = c.path(c.s);
         c.x = p.x; c.z = p.z;
         c.ry = Math.atan2(p.dx, p.dz);
+        // pedestrians go under the wheels first
+        for (const pd of peds) {
+            if (pd.deadUntil <= now && Math.hypot(c.x - pd.x, c.z - pd.z) < 2.0) pedDie(pd, now);
+        }
         if (!started || self.dead || self.inside || self.tank) continue;
         if (now - c.lastHit < CONFIG.CAR_HIT_COOLDOWN_MS) continue;
         if (Math.hypot(c.x - self.x, c.z - self.z) < CONFIG.CAR_HIT_RADIUS) {
@@ -551,6 +614,16 @@ function stepBullets(dt) {
             bullets.delete(id);
             emit('fx', { type: 'boom', x: b.x, z: b.z, big: !!W.blast });
             damageSelf(b.owner, b.w, W.dmg, b.x, b.z);
+            continue;
+        }
+        // bystanders are not bulletproof (local ambience, no score)
+        const nowMs = Date.now();
+        for (const pd of peds) {
+            if (pd.deadUntil <= nowMs && Math.hypot(b.x - pd.x, b.z - pd.z) < 1.2) {
+                bullets.delete(id);
+                pedDie(pd, nowMs);
+                break;
+            }
         }
     }
 }
@@ -777,6 +850,7 @@ export function tick(dt, now) {
     if (started) publishPresence(now);
     stepShells(dt);
     stepBullets(dt);
+    stepPeds(dt, now);
     stepTraffic(dt, now);
     collectPickups(now);
 
