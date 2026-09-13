@@ -498,6 +498,9 @@ export function init() {
     $('relay-close').addEventListener('click', () => toggleRelayPanel(false));
     $('arcade-close').addEventListener('click', closeArcade);
     $('map-toggle').addEventListener('click', () => toggleMap());
+    $('view-pill').addEventListener('click', () => {
+        toast(Scene.toggleFpv() ? '👁 First person — V or 👁 to switch back' : '🎥 Third person');
+    });
     $('map-overlay').addEventListener('click', () => toggleMap(false));
     $('action-button').addEventListener('click', doInteract);
     $('chat-open-button').addEventListener('click', openChatInput);
@@ -518,6 +521,7 @@ export function init() {
             if (World.self.tank || armed) World.fire();
             else if (e.code === 'Space') doInteract();
         } else if (e.code === 'KeyE') doInteract();
+        else if (e.code === 'KeyV') Scene.toggleFpv();
         else if (e.code === 'KeyM') toggleMap();
         else if (e.code === 'Tab') { e.preventDefault(); toggleScore(true); }
         else if (e.code === 'Enter') openChatInput();

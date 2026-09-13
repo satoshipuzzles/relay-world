@@ -38,9 +38,9 @@
             </div>
             <div id="login-status"></div>
             <div class="instructions">
-                <p><strong>MOVE:</strong> WASD / arrows &nbsp;·&nbsp; touch: joystick</p>
-                <p><strong>FIRE:</strong> Space / F / 🔥 &nbsp;·&nbsp; <strong>INTERACT:</strong> E</p>
-                <p><strong>SCORES:</strong> Tab &nbsp;·&nbsp; <strong>CHAT:</strong> Enter &nbsp;·&nbsp; <strong>MAP:</strong> M</p>
+                <p><strong>MOVE:</strong> WASD &nbsp;·&nbsp; <strong>SPRINT:</strong> Shift &nbsp;·&nbsp; touch: joystick</p>
+                <p><strong>AIM:</strong> click for mouse-look &nbsp;·&nbsp; <strong>FIRE:</strong> click / Space / 🔥</p>
+                <p><strong>VIEW:</strong> V &nbsp;·&nbsp; <strong>INTERACT:</strong> E &nbsp;·&nbsp; <strong>SCORES:</strong> Tab &nbsp;·&nbsp; <strong>MAP:</strong> M</p>
             </div>
         </div>
     </div>
@@ -52,6 +52,7 @@
             <div id="weapon-pill" class="hide"></div>
             <div id="hp-pill" class="hide">❤ 100</div>
             <div id="online-pill">👥 <span id="online-count">1</span></div>
+            <button id="view-pill" class="pill-button" title="First / third person (V)">👁</button>
             <button id="map-toggle" class="pill-button" title="Map (M)">🗺️</button>
         </div>
         <div id="round-bar">
@@ -65,6 +66,7 @@
             <div id="splash-sub"></div>
         </div>
         <div id="interact-prompt" class="hide"></div>
+        <div id="crosshair" class="hide"></div>
         <div id="chat-box">
             <div id="chat-log"></div>
             <div id="chat-input-row" class="hide">

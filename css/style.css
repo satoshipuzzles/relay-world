@@ -532,6 +532,24 @@ html, body {
 }
 #fade-veil.on { opacity: 1; }
 
+/* first-person crosshair */
+#crosshair {
+    position: fixed;
+    left: 50%; top: 50%;
+    width: 18px; height: 18px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 5;
+}
+#crosshair::before, #crosshair::after {
+    content: '';
+    position: absolute;
+    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+}
+#crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+#crosshair::after { top: 8px; left: 0; height: 2px; width: 18px; }
+
 /* ---- relay picker ---- */
 #relay-panel {
     top: 50%; left: 50%;

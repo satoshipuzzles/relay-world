@@ -28,6 +28,7 @@ const keys = new Set();
 let joyVec = { x: 0, y: 0 };
 let dragging = false, lastDrag = null;
 let camPitch = 0.35;
+let fpMode = false, fpPitch = 0; // first-person view (V / 👁)
 let velX = 0, velZ = 0, tankVel = 0; // eased self velocity
 const occluders = [];   // meshes the camera should not see through
 const treeList = [];    // {mesh, x, z} so house lots can clear their trees
@@ -563,6 +564,15 @@ export function init(canvas) {
 
 // --- input -------------------------------------------------------------------
 
+/** First-person toggle; the crosshair only makes sense while aiming. */
+export function toggleFpv(force) {
+    fpMode = force !== undefined ? !!force : !fpMode;
+    const ch = document.getElementById('crosshair');
+    if (ch) ch.classList.toggle('hide', !fpMode);
+    return fpMode;
+}
+export function isFpv() { return fpMode; }
+
 function initInput(canvas) {
     window.addEventListener('keydown', (e) => {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -571,7 +581,21 @@ function initInput(canvas) {
     window.addEventListener('keyup', (e) => keys.delete(e.code));
     window.addEventListener('blur', () => keys.clear());
 
+    // desktop mouse-look: first click locks the pointer, moving the mouse
+    // aims, later clicks fire (held = automatic). Touch keeps drag-to-look.
+    let fireRep = null;
+    const stopFire = () => { if (fireRep) { clearInterval(fireRep); fireRep = null; } };
     canvas.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'mouse') {
+            if (document.pointerLockElement !== canvas) {
+                canvas.requestPointerLock();
+                return;
+            }
+            World.fire();
+            stopFire();
+            fireRep = setInterval(() => World.fire(), 110);
+            return;
+        }
         dragging = true;
         lastDrag = { x: e.clientX, y: e.clientY };
     });
@@ -581,9 +605,17 @@ function initInput(canvas) {
         const dy = e.clientY - lastDrag.y;
         lastDrag = { x: e.clientX, y: e.clientY };
         World.self.ry -= dx * 0.005;
-        camPitch = Math.max(0.1, Math.min(1.1, camPitch + dy * 0.003));
+        if (fpMode) fpPitch = Math.max(-0.85, Math.min(0.9, fpPitch - dy * 0.003));
+        else camPitch = Math.max(0.1, Math.min(1.1, camPitch + dy * 0.003));
     });
-    window.addEventListener('pointerup', () => { dragging = false; lastDrag = null; });
+    window.addEventListener('pointerup', () => { dragging = false; lastDrag = null; stopFire(); });
+    document.addEventListener('pointerlockchange', stopFire);
+    window.addEventListener('mousemove', (e) => {
+        if (document.pointerLockElement !== canvas) return;
+        World.self.ry -= e.movementX * 0.0024;
+        if (fpMode) fpPitch = Math.max(-0.85, Math.min(0.9, fpPitch - e.movementY * 0.0022));
+        else camPitch = Math.max(0.1, Math.min(1.1, camPitch + e.movementY * 0.002));
+    });
 
     // virtual joystick
     const joy = document.getElementById('joystick');
@@ -846,8 +878,10 @@ export function update(dt) {
         // Camera-right in world space is (-cos ry, +sin ry) for a camera that
         // sits behind the player looking along (+sin ry, +cos ry).
         const sin = Math.sin(s.ry), cos = Math.cos(s.ry);
-        const tx = moving ? (sin * fwd - cos * strafe) * CONFIG.WALK_SPEED : 0;
-        const tz = moving ? (cos * fwd + sin * strafe) * CONFIG.WALK_SPEED : 0;
+        const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+        const spd = CONFIG.WALK_SPEED * (sprint ? 1.6 : 1);
+        const tx = moving ? (sin * fwd - cos * strafe) * spd : 0;
+        const tz = moving ? (cos * fwd + sin * strafe) * spd : 0;
         const k = Math.min(1, dt * 11);
         velX += (tx - velX) * k;
         velZ += (tz - velZ) * k;
@@ -857,8 +891,8 @@ export function update(dt) {
     s.moving = moving;
 
     const baseY = s.inside ? INTERIOR_Y : 0;
-    selfAvatar.visible = !s.tank;
-    selfTank.visible = s.tank && !s.inside;
+    selfAvatar.visible = !s.tank && !fpMode;
+    selfTank.visible = s.tank && !s.inside && !fpMode;
     if (s.tank) {
         selfTank.position.set(s.x, 0, s.z);
         selfTank.rotation.y = s.ry;
@@ -898,27 +932,37 @@ export function update(dt) {
     sun.position.set(s.x + 60, 100, s.z + 40);
     sun.target.position.set(s.x, 0, s.z);
 
-    // camera: third person behind player (further back in a tank), pulled in
-    // when a house or building sits between the camera and the player
-    const camDist = s.tank ? 13 : 9, camH = (s.tank ? 4.5 : 3) + camPitch * 6;
-    const eye = new THREE.Vector3(s.x, baseY + 2, s.z);
-    let desired = new THREE.Vector3(s.x - Math.sin(s.ry) * camDist, baseY + camH, s.z - Math.cos(s.ry) * camDist);
-    if (!s.inside && occluders.length) {
-        const dir = desired.clone().sub(eye);
-        const len = dir.length();
-        dir.normalize();
-        camRay.set(eye, dir);
-        camRay.far = len;
-        const hits = camRay.intersectObjects(occluders, true);
-        if (hits.length) {
-            // park the camera just in front of whatever is in the way — a
-            // brief close-up beats a wall filling the screen, and it relaxes
-            // as soon as the player moves clear
-            desired = eye.clone().add(dir.multiplyScalar(Math.max(2.5, hits[0].distance - 0.6)));
+    if (fpMode) {
+        // first person: camera at eye height (turret height in a tank), aimed
+        // by mouse/touch pitch; a light bob keeps walking from feeling frozen
+        const bobY = (!s.tank && moving) ? Math.abs(Math.sin(performance.now() / 130)) * 0.07 : 0;
+        const eyeY = baseY + (s.tank ? 2.35 : 1.72) + bobY;
+        camera.position.set(s.x, eyeY, s.z);
+        const cp = Math.cos(fpPitch);
+        camera.lookAt(s.x + Math.sin(s.ry) * cp, eyeY + Math.sin(fpPitch), s.z + Math.cos(s.ry) * cp);
+    } else {
+        // camera: third person behind player (further back in a tank), pulled
+        // in when a house or building sits between the camera and the player
+        const camDist = s.tank ? 13 : 9, camH = (s.tank ? 4.5 : 3) + camPitch * 6;
+        const eye = new THREE.Vector3(s.x, baseY + 2, s.z);
+        let desired = new THREE.Vector3(s.x - Math.sin(s.ry) * camDist, baseY + camH, s.z - Math.cos(s.ry) * camDist);
+        if (!s.inside && occluders.length) {
+            const dir = desired.clone().sub(eye);
+            const len = dir.length();
+            dir.normalize();
+            camRay.set(eye, dir);
+            camRay.far = len;
+            const hits = camRay.intersectObjects(occluders, true);
+            if (hits.length) {
+                // park the camera just in front of whatever is in the way — a
+                // brief close-up beats a wall filling the screen, and it
+                // relaxes as soon as the player moves clear
+                desired = eye.clone().add(dir.multiplyScalar(Math.max(2.5, hits[0].distance - 0.6)));
+            }
         }
+        camera.position.lerp(desired, Math.min(1, dt * 10));
+        camera.lookAt(s.x, baseY + 2, s.z);
     }
-    camera.position.lerp(desired, Math.min(1, dt * 10));
-    camera.lookAt(s.x, baseY + 2, s.z);
 
     renderer.render(scene, camera);
 }
