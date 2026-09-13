@@ -52,6 +52,11 @@ export const CONFIG = {
     MAX_HP: 100,
     DEATH_MS: 2600,           // corpse-on-screen time before respawning
 
+    // Downtown traffic: cars follow fixed routes and do not brake for you
+    CAR_DMG: 34,
+    CAR_HIT_RADIUS: 2.3,      // metres — closer than this and you're clipped
+    CAR_HIT_COOLDOWN_MS: 900, // i-frames per car so one bump ≠ instant death
+
     // Grand Theft Relay: on-foot deathmatch
     PICKUPS_PER_ROUND: 16,    // weapons lying around the map
     PICKUP_RADIUS: 1.7,       // walk this close to grab one

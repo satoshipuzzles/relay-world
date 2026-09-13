@@ -50,10 +50,107 @@ function hash32(str) {
     return h >>> 0;
 }
 
+const boxHit = (b, x, z, pad) =>
+    x > b.x - b.w / 2 - pad && x < b.x + b.w / 2 + pad &&
+    z > b.z - b.d / 2 - pad && z < b.z + b.d / 2 + pad;
+
 function insideBuilding(x, z, pad = 4) {
-    return BUILDINGS.find(b =>
-        x > b.x - b.w / 2 - pad && x < b.x + b.w / 2 + pad &&
-        z > b.z - b.d / 2 - pad && z < b.z + b.d / 2 + pad);
+    return BUILDINGS.find(b => boxHit(b, x, z, pad)) ||
+        cityBlocks.find(b => boxHit(b, x, z, pad));
+}
+
+// --- downtown ------------------------------------------------------------------
+// A deterministic tower grid north of the loop road. Purely a function of the
+// hash, so every client agrees on the skyline — and therefore on collisions,
+// bullet stops and weapon-pickup placement.
+
+export const cityBlocks = []; // {x, z, w, d, h, color}
+function buildCity() {
+    const palette = [0x54606e, 0x6e6258, 0x4e5a52, 0x605668, 0x5a6472, 0x685e50];
+    for (let gx = 0; gx < 6; gx++) {
+        for (let gz = 0; gz < 2; gz++) {
+            const bx = -80 + gx * 32, bz = 66 + gz * 32;
+            const h = hash32(`city:${gx}:${gz}`);
+            if (h % 7 === 0) continue; // a few empty lots keep sight lines open
+            const mk = (x, z, w, d, i) => {
+                const hh = hash32(`twr:${gx}:${gz}:${i}`);
+                cityBlocks.push({ x, z, w, d, h: 18 + (hh % 26), color: palette[hh % palette.length] });
+            };
+            if (h % 3 === 0) { mk(bx - 6, bz, 10, 20, 0); mk(bx + 6, bz, 10, 16, 1); }
+            else mk(bx, bz, 18, 18, 0);
+        }
+    }
+}
+buildCity();
+
+// --- traffic ---------------------------------------------------------------
+// Ambient cars on fixed routes. Local-only and deterministic enough to feel
+// shared; the only gameplay effect (getting run over) is victim-authoritative
+// like every other death, so kills still sync through the relay.
+
+export const cars = []; // {x, z, ry, path, s, speed, color, lastHit}
+
+function circlePath(cx, cz, r, dir) {
+    return (s) => {
+        const a = s / r * dir;
+        return { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r, dx: -Math.sin(a) * dir, dz: Math.cos(a) * dir };
+    };
+}
+
+function rectPath(x0, z0, x1, z1) {
+    const w = x1 - x0, d = z1 - z0, P = 2 * (w + d);
+    return (s) => {
+        s = ((s % P) + P) % P;
+        if (s < w) return { x: x0 + s, z: z0, dx: 1, dz: 0 };
+        s -= w;
+        if (s < d) return { x: x1, z: z0 + s, dx: 0, dz: 1 };
+        s -= d;
+        if (s < w) return { x: x1 - s, z: z1, dx: -1, dz: 0 };
+        s -= w;
+        return { x: x0, z: z1 - s, dx: 0, dz: -1 };
+    };
+}
+
+function buildTraffic() {
+    const colors = [0xc23b22, 0x2b6cb0, 0xe8b23a, 0x3f8f5f, 0x8a4fbf, 0xd8d8d8, 0x23262c];
+    const routes = [
+        { path: circlePath(0, 0, 18.5, 1), len: 116, n: 3, speed: 8 },     // plaza ring
+        { path: circlePath(0, -20, 67.5, -1), len: 424, n: 5, speed: 12 }, // suburb loop
+        { path: rectPath(-64, 50, 64, 114), len: 512, n: 4, speed: 11 },   // downtown outer
+        { path: rectPath(-32, 50, 32, 82), len: 192, n: 2, speed: 10 },    // downtown inner
+    ];
+    let ci = 0;
+    for (const r of routes) {
+        for (let i = 0; i < r.n; i++) {
+            cars.push({
+                path: r.path, s: (r.len / r.n) * i,
+                speed: r.speed * (0.88 + (ci % 3) * 0.12),
+                color: colors[ci++ % colors.length],
+                x: 0, z: 0, ry: 0, lastHit: 0,
+            });
+        }
+    }
+}
+buildTraffic();
+
+function stepTraffic(dt, now) {
+    for (const c of cars) {
+        c.s += c.speed * dt;
+        const p = c.path(c.s);
+        c.x = p.x; c.z = p.z;
+        c.ry = Math.atan2(p.dx, p.dz);
+        if (!started || self.dead || self.inside || self.tank) continue;
+        if (now - c.lastHit < CONFIG.CAR_HIT_COOLDOWN_MS) continue;
+        if (Math.hypot(c.x - self.x, c.z - self.z) < CONFIG.CAR_HIT_RADIUS) {
+            c.lastHit = now;
+            // shoved clear (GTA rules: traffic does not brake), then hurt
+            const px = self.x - c.x, pz = self.z - c.z;
+            const pl = Math.hypot(px, pz) || 1;
+            const nx = self.x + px / pl * 3.5, nz = self.z + pz / pl * 3.5;
+            if (!insideBuilding(nx, nz, 1) && !insideHouse(nx, nz)) { self.x = nx; self.z = nz; }
+            damageSelf('traffic', 'car', CONFIG.CAR_DMG, c.x, c.z);
+        }
+    }
 }
 
 /** Rotate a local (lx, lz) offset by yaw — matches three.js rotation.y. */
@@ -110,6 +207,8 @@ function homeFor(pubkey) {
         const a = (hx % 6283) / 1000;
         const x = Math.cos(a) * r;
         const z = Math.sin(a) * r * 0.9 - 20;
+        // keep yards out of downtown — that land belongs to the towers
+        if (x > -102 && x < 102 && z > 40 && z < 122) continue;
         // the plaza + its ring road are centred on the origin, not (0,-20)
         if (!insideBuilding(x, z) && Math.hypot(x, z) > 32) return { x, z };
     }
@@ -341,8 +440,10 @@ function beginDeath(killerName) {
     emit('fx', { type: 'selfdeath', by: killerName });
     setTimeout(() => {
         self.hp = CONFIG.MAX_HP;
-        self.x = (Math.random() - 0.5) * 16;
-        self.z = 12 + Math.random() * 8;
+        // centre of the plaza — inside the ring road, so respawning can't
+        // drop you under the wheels of the plaza traffic
+        self.x = (Math.random() - 0.5) * 12;
+        self.z = 1 + Math.random() * 9;
         self.dead = false;
         emit('fx', { type: 'respawned' });
     }, CONFIG.DEATH_MS);
@@ -407,18 +508,19 @@ function damageSelf(owner, w, dmg, x, z) {
     if (self.dead) return; // corpses don't take more damage
     self.hp -= dmg;
     const shooter = players.get(owner);
+    const sName = owner === 'traffic' ? 'TRAFFIC' : (shooter ? shooter.name : undefined);
     const dead = self.hp <= 0;
     Nostr.publish(CONFIG.KIND_ACTION, JSON.stringify({
         a: dead ? 'kill' : 'hit',
         shooter: owner,
         name: Nostr.identity.name,
-        sName: shooter ? shooter.name : undefined,
+        sName,
         w,
         x: +self.x.toFixed(1), z: +self.z.toFixed(1),
     }));
     if (dead) {
-        tallyKill(owner, shooter ? shooter.name : null, Nostr.identity.sessionPk, Nostr.identity.name, w);
-        beginDeath(shooter ? shooter.name : 'someone');
+        tallyKill(owner, sName || null, Nostr.identity.sessionPk, Nostr.identity.name, w);
+        beginDeath(sName || 'someone');
     } else {
         emit('fx', { type: 'blood', x: self.x, z: self.z });
         emit('fx', { type: 'hurt' });
@@ -675,6 +777,7 @@ export function tick(dt, now) {
     if (started) publishPresence(now);
     stepShells(dt);
     stepBullets(dt);
+    stepTraffic(dt, now);
     collectPickups(now);
 
     // NPC wandering

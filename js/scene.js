@@ -22,6 +22,7 @@ const fxList = [];              // {mesh, t0, dur, grow}
 const bloodFx = [];             // {mesh, vx, vy, vz, t0} flying droplets
 const bloodPools = [];          // {mesh, t0} spreading ground stains
 const corpses = [];             // {g, t0} bodies tipping over, then fading
+const carMeshes = [];           // parallel to World.cars (static routes)
 
 // interiors live far below the map, one room per building
 const INTERIOR_Y = -200;
@@ -292,6 +293,81 @@ function makeBuilding(b) {
     return g;
 }
 
+/** Facade texture: window grid with a scatter of lit ones. No text. */
+function towerTexture(color) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d');
+    const base = new THREE.Color(color).offsetHSL(0, 0, 0.12); // sun-lit concrete
+    ctx.fillStyle = '#' + base.getHexString();
+    ctx.fillRect(0, 0, 64, 64);
+    for (let y = 4; y < 64; y += 8) {
+        for (let x = 4; x < 64; x += 8) {
+            ctx.fillStyle = Math.random() < 0.3 ? '#ffd98a' : '#2e3a4a';
+            ctx.fillRect(x, y, 4, 5);
+        }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+}
+
+function makeTower(b) {
+    const g = new THREE.Group();
+    const tex = towerTexture(b.color);
+    tex.repeat.set(Math.max(1, Math.round(b.w / 7)), Math.max(2, Math.round(b.h / 7)));
+    const wall = new THREE.MeshLambertMaterial({ map: tex });
+    const roofM = new THREE.MeshLambertMaterial({ color: 0x2c3138 });
+    const box = new THREE.Mesh(new THREE.BoxGeometry(b.w, b.h, b.d),
+        [wall, wall, roofM, roofM, wall, wall]); // plain roof, windowed sides
+    box.position.set(b.x, b.h / 2, b.z);
+    const base = new THREE.Mesh(new THREE.BoxGeometry(b.w + 0.6, 4.2, b.d + 0.6),
+        new THREE.MeshLambertMaterial({ color: 0x363c44 }));
+    base.position.set(b.x, 2.1, b.z);
+    const lip = new THREE.Mesh(new THREE.BoxGeometry(b.w + 0.8, 0.9, b.d + 0.8), roofM);
+    lip.position.set(b.x, b.h + 0.45, b.z);
+    g.add(box, base, lip);
+    if (b.h > 34) {
+        const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.25, 6, 6), roofM);
+        ant.position.set(b.x, b.h + 3.9, b.z);
+        g.add(ant);
+    }
+    g.traverse(o => { o.castShadow = true; o.receiveShadow = true; });
+    return g;
+}
+
+/** Low-poly sedan; +z is the nose so it points down its route. */
+function makeCar(color) {
+    if (!GEO.carWheel) GEO.carWheel = new THREE.CylinderGeometry(0.34, 0.34, 0.3, 10);
+    const g = new THREE.Group();
+    const mat = new THREE.MeshLambertMaterial({ color });
+    const dark = new THREE.MeshLambertMaterial({ color: 0x1c1e22 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.55, 4.0), mat);
+    body.position.y = 0.72;
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.55, 2.0),
+        new THREE.MeshLambertMaterial({ color: 0x9fc4d8 }));
+    cabin.position.set(0, 1.22, -0.35);
+    g.add(body, cabin);
+    for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+            const w = new THREE.Mesh(GEO.carWheel, dark);
+            w.rotation.z = Math.PI / 2;
+            w.position.set(sx * 0.95, 0.34, sz * 1.3);
+            g.add(w);
+        }
+    }
+    const lightMat = new THREE.MeshBasicMaterial({ color: 0xfff2b8 });
+    for (const sx of [-1, 1]) {
+        const hl = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.18, 0.08), lightMat);
+        hl.position.set(sx * 0.6, 0.78, 2.02);
+        g.add(hl);
+    }
+    g.traverse(o => { o.castShadow = true; });
+    return g;
+}
+
 function makeInterior(b) {
     const g = new THREE.Group();
     const ox = b.x, oz = b.z; // reuse x/z so the minimap still makes vague sense
@@ -390,9 +466,11 @@ export function init(canvas) {
         }
     }
 
-    scene.add(new THREE.HemisphereLight(0xdfefff, 0x55703f, 1.0));
+    // hemisphere is the fill light for shadowed areas — with a downtown of
+    // tall towers, street canyons must stay readable, not pitch black
+    scene.add(new THREE.HemisphereLight(0xdfefff, 0x55703f, 1.3));
     sun = new THREE.DirectionalLight(0xfff4d6, 1.6);
-    sun.position.set(60, 100, 40);
+    sun.position.set(42, 160, 28); // high sun: short shadows in the tower canyons
     sun.castShadow = true;
     sun.shadow.mapSize.set(isTouch ? 1024 : 2048, isTouch ? 1024 : 2048);
     const sc = sun.shadow.camera;
@@ -467,6 +545,27 @@ export function init(canvas) {
         street(Math.cos(a) * 21, Math.sin(a) * 21, Math.cos(a) * 66, Math.sin(a) * 66 - 20);
     }
 
+    // downtown: grid streets, sidewalk pads, and the tower skyline
+    street(0, 22, 0, 50, 7); // main drag from the plaza ring into the city
+    for (const gz of [50, 82, 114]) street(-96, gz, 96, gz, 8);
+    for (let i = 0; i < 7; i++) street(-96 + i * 32, 50, -96 + i * 32, 114, 8);
+    World.cityBlocks.forEach((b, i) => {
+        const pad = flat(new THREE.Mesh(new THREE.PlaneGeometry(b.w + 7, b.d + 7), paveMat), 0.03 + i * 0.0004);
+        pad.position.x = b.x;
+        pad.position.z = b.z;
+        scene.add(pad);
+        const t = makeTower(b);
+        scene.add(t);
+        occluders.push(t);
+    });
+
+    // traffic
+    for (const c of World.cars) {
+        const m = makeCar(c.color);
+        scene.add(m);
+        carMeshes.push(m);
+    }
+
     // scattered trees, deterministic — leafy sphere clusters, not cones
     if (!GEO.trunk) {
         GEO.trunk = new THREE.CylinderGeometry(0.35, 0.5, 2.8, 8);
@@ -481,6 +580,7 @@ export function init(canvas) {
         if (World.insideBuilding(x, z, 6)) continue;
         if (r > 60 && r < 76) continue;     // keep the loop road clear
         if (Math.hypot(x, z) < 26) continue; // and the plaza + ring road
+        if (x > -102 && x < 102 && z > 44 && z < 120) continue; // downtown is concrete
         const tree = new THREE.Group();
         const trunk = new THREE.Mesh(GEO.trunk, trunkMat);
         trunk.position.y = 1.4;
@@ -1000,6 +1100,14 @@ export function update(dt) {
         }
     }
 
+    World.cars.forEach((c, i) => {
+        const m = carMeshes[i];
+        if (!m) return;
+        m.visible = !s.inside;
+        m.position.set(c.x, 0, c.z);
+        m.rotation.y = c.ry;
+    });
+
     syncShells();
     syncBullets();
     syncPickups();
@@ -1008,7 +1116,7 @@ export function update(dt) {
 
     // keep the sun (and its shadow frustum) centred on the player so shadows
     // stay sharp across the whole 400m world
-    sun.position.set(s.x + 60, 100, s.z + 40);
+    sun.position.set(s.x + 42, 160, s.z + 28);
     sun.target.position.set(s.x, 0, s.z);
 
     if (fpMode) {

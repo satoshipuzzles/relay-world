@@ -388,7 +388,7 @@ function addKillFeedRow(f) {
     const feed = $('kill-feed');
     const row = document.createElement('div');
     row.className = 'kill-row';
-    const icon = f.w === 'tank' ? '💥' : (WEAPONS[f.w] ? WEAPONS[f.w].icon : '🔫');
+    const icon = f.w === 'tank' ? '💥' : f.w === 'car' ? '🚗' : (WEAPONS[f.w] ? WEAPONS[f.w].icon : '🔫');
     row.textContent = `${f.shooter} ${icon} ${f.victim}`;
     feed.appendChild(row);
     while (feed.children.length > 5) feed.firstChild.remove();
@@ -421,6 +421,10 @@ function drawMap() {
     ctx.beginPath();
     ctx.arc(px(0), pz(0), 16 / S * canvas.width, 0, 7);
     ctx.fill();
+    ctx.fillStyle = '#3a4148';
+    for (const b of World.cityBlocks) {
+        ctx.fillRect(px(b.x - b.w / 2), pz(b.z - b.d / 2), b.w / S * canvas.width, b.d / S * canvas.height);
+    }
     for (const b of BUILDINGS) {
         ctx.fillStyle = '#' + b.color.toString(16).padStart(6, '0');
         ctx.fillRect(px(b.x - b.w / 2), pz(b.z - b.d / 2), b.w / S * canvas.width, b.d / S * canvas.height);
@@ -433,6 +437,8 @@ function drawMap() {
     for (const h of World.houses.values()) ctx.fillRect(px(h.x) - 2, pz(h.z) - 2, 5, 5);
     ctx.fillStyle = '#ffe599';
     for (const npc of World.npcs.values()) ctx.fillRect(px(npc.x) - 2, pz(npc.z) - 2, 4, 4);
+    ctx.fillStyle = '#f2b842';
+    for (const c of World.cars) ctx.fillRect(px(c.x) - 2, pz(c.z) - 2, 4, 4);
     ctx.fillStyle = '#00ffff';
     for (const p of World.players.values()) ctx.fillRect(px(p.x) - 3, pz(p.z) - 3, 6, 6);
     // self as arrow
